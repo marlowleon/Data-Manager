@@ -1,0 +1,35 @@
+services:
+  data-manager:
+    build: .
+    container_name: data-manager
+    restart: unless-stopped
+    mem_limit: 4g
+    ports:
+      - "8085:8080"
+    environment:
+      DATA_MANAGER_ADMIN_USER: admin
+      DATA_MANAGER_ADMIN_PASSWORD: changeme
+      DATA_MANAGER_SESSION_SECRET: change-this-long-random-secret
+      DATA_MANAGER_PORT: 8080
+      DATA_MANAGER_MAX_READY_PER_SCAN: 5
+      DATA_MANAGER_MAX_QUEUE_DISPLAY: 50
+      DATA_MANAGER_TRANSFER_CHUNK_SIZE: 1048576
+      DATA_MANAGER_MEMORY_LIMIT_BYTES: 4294967296
+      DATA_MANAGER_MAX_NEW_FILE_EVENTS_PER_SCAN: 25
+      DATA_MANAGER_MAX_REQUEUE_PER_CLICK: 100
+      DATA_MANAGER_LIBRARY_VISIBILITY_SCAN_LIMIT: 0
+      DATA_MANAGER_LIBRARY_VISIBILITY_CACHE_SECONDS: 300
+      DATA_MANAGER_FFPROBE_TIMEOUT: 20
+      DATA_MANAGER_MEDIA_SCAN_WORKERS: 2
+      DATA_MANAGER_MALWARE_SCAN_HOUR: 12
+      DATA_MANAGER_MALWARE_SCAN_TIMEOUT: 900
+      DATA_MANAGER_MALWARE_SCAN_WORKERS: 2
+      TMDB_API_KEY: ""
+    #Example volumes, adjust as needed
+    volumes:
+      - ./data:/data
+      - /mnt/unraid/plex-server-media/downloads/completed:/watch
+      - /mnt/unraid/plex-server-media/downloads/to-review:/to-review
+      - /mnt/unraid/plex-server-media/downloads/quarantine:/quarantine
+      - /mnt/unraid/plex-server-media/movies:/movies
+      - /mnt/unraid/plex-server-media/tv-shows:/tv
