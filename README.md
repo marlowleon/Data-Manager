@@ -1,3 +1,4 @@
+
 # Data Manager
 
 Data Manager watches a downloads folder, detects new video files, renames them, creates the correct library folders, and moves them into movie or TV destinations.
@@ -234,3 +235,7 @@ Note: normal Linux, Docker, and SMB/CIFS permissions do not provide a simple "wr
 - Health checks for mount availability and write permissions.
 - Approval workflow for low-confidence metadata matches.
 - Retention policies for old logs and completed queue entries.
+=======
+# Data-Manager
+Scans and renames/ moves your media from a single download folder to seprate folders, example if you have tv shows and movies all downloading to the same folder, this will scan each item and it will scan, check for virus's, rename, check if this file already exists, if it doesn't it will move to correct tv or movie folder. Plus more
+
