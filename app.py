@@ -21,6 +21,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from data_manager_inventory import empty_inventory, scan_media_files
+
 APP_NAME = "Data Manager"
 DB_PATH = Path(os.environ.get("DATA_MANAGER_DB", "/data/data-manager.db"))
 HOST = os.environ.get("DATA_MANAGER_HOST", "0.0.0.0")
@@ -127,6 +129,7 @@ jobs = {
         "last_error": "",
         "changed": 0,
         "failed": 0,
+        "workers": 0,
         "activity": [],
         "message": "No manual scan running",
     },
@@ -145,6 +148,7 @@ jobs = {
         "last_error": "",
         "open_count": 0,
         "resolved_count": 0,
+        "workers": 0,
         "activity": [],
         "message": "No duplicate scan running",
     },
@@ -165,6 +169,7 @@ jobs = {
         "failed": 0,
         "infected": 0,
         "quarantined": 0,
+        "workers": 0,
         "activity": [],
         "message": "No malware scan running",
     },
@@ -2240,7 +2245,7 @@ def update_job(name, **values):
         if activity:
             items = jobs[name].setdefault("activity", [])
             items.insert(0, {"time": now_iso(), "text": str(activity)})
-            del items[25:]
+            del items[100:]
         jobs[name]["updated_at"] = now_iso()
 
 
@@ -2264,6 +2269,7 @@ def start_background_job(name, kind, target):
             "failed": 0,
             "infected": 0,
             "quarantined": 0,
+            "workers": 0,
             "open_count": 0,
             "resolved_count": 0,
             "activity": [{"time": now_iso(), "text": f"{kind} started"}],
@@ -2274,77 +2280,49 @@ def start_background_job(name, kind, target):
     return True
 
 
-def media_files(root, settings):
+def empty_library_inventory(root):
+    return empty_inventory(root)
+
+
+def media_files(root, settings, update_inventory=False):
     root = Path(root)
-    if not root.exists():
-        return []
-    exts = extension_set(settings)
-    return [path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in exts]
+    cache_key = (str(root), settings.get("movie_extensions", ""))
+    files, inventory = scan_media_files(root, extension_set(settings))
+    if update_inventory:
+        set_library_inventory_cache(cache_key, inventory)
+    return files
+
+
+def set_library_inventory_cache(cache_key, inventory):
+    cached_at = time.time()
+    inventory = dict(inventory)
+    inventory["cached_at_label"] = now_iso()
+    inventory["cache_only"] = False
+    with library_visibility_lock:
+        library_visibility_cache[cache_key] = {"cached_at": cached_at, "inventory": inventory}
 
 
 def library_inventory(root, settings):
     root = Path(root)
     cache_key = (str(root), settings.get("movie_extensions", ""))
-    now = time.time()
     with library_visibility_lock:
         cached = library_visibility_cache.get(cache_key)
-        if cached and now - cached["cached_at"] < LIBRARY_VISIBILITY_CACHE_SECONDS:
-            return dict(cached["inventory"])
+        if cached:
+            inventory = dict(cached["inventory"])
+            inventory.setdefault("cached_at_label", datetime.fromtimestamp(cached["cached_at"], timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+            inventory.setdefault("cache_only", False)
+            return inventory
+    return empty_library_inventory(root)
 
-    inventory = {
-        "path": str(root),
-        "exists": root.exists(),
-        "readable": os.access(root, os.R_OK | os.X_OK) if root.exists() else False,
-        "total_files": 0,
-        "supported_files": 0,
-        "supported_bytes": 0,
-        "folders": 0,
-        "ignored_exts": {},
-        "samples": [],
-        "limited": False,
-        "scanned_entries": 0,
-    }
-    if not inventory["exists"] or not root.is_dir():
-        return inventory
-    exts = extension_set(settings)
-    stack = [root]
-    while stack and (LIBRARY_VISIBILITY_SCAN_LIMIT <= 0 or inventory["scanned_entries"] < LIBRARY_VISIBILITY_SCAN_LIMIT):
-        current = stack.pop()
-        try:
-            with os.scandir(current) as entries:
-                for entry in entries:
-                    inventory["scanned_entries"] += 1
-                    if LIBRARY_VISIBILITY_SCAN_LIMIT > 0 and inventory["scanned_entries"] >= LIBRARY_VISIBILITY_SCAN_LIMIT:
-                        inventory["limited"] = True
-                        break
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            inventory["folders"] += 1
-                            stack.append(Path(entry.path))
-                            continue
-                        if not entry.is_file(follow_symlinks=False):
-                            continue
-                    except OSError:
-                        continue
-                    path = Path(entry.path)
-                    inventory["total_files"] += 1
-                    suffix = path.suffix.lower() or "(none)"
-                    if suffix in exts:
-                        inventory["supported_files"] += 1
-                        try:
-                            inventory["supported_bytes"] += path.stat().st_size
-                        except OSError:
-                            pass
-                        if len(inventory["samples"]) < 5:
-                            inventory["samples"].append(str(path))
-                    else:
-                        inventory["ignored_exts"][suffix] = inventory["ignored_exts"].get(suffix, 0) + 1
-        except OSError:
-            continue
-    if stack:
-        inventory["limited"] = True
-    with library_visibility_lock:
-        library_visibility_cache[cache_key] = {"cached_at": now, "inventory": dict(inventory)}
+
+def refresh_library_inventory(root, settings):
+    return library_inventory_from_scan(root, settings)
+
+
+def library_inventory_from_scan(root, settings):
+    files = media_files(root, settings, update_inventory=True)
+    inventory = library_inventory(root, settings)
+    inventory["files_seen"] = len(files)
     return inventory
 
 
@@ -2365,25 +2343,35 @@ def library_inventory_summary(label, inventory):
 
 def manual_scan_movies_job():
     settings = get_settings()
-    files = media_files(settings["movie_folder"], settings)
+    files = media_files(settings["movie_folder"], settings, update_inventory=True)
     run_manual_scan("movie", files, settings)
 
 
 def manual_scan_tv_job():
     settings = get_settings()
-    files = media_files(settings["tv_folder"], settings)
+    files = media_files(settings["tv_folder"], settings, update_inventory=True)
     run_manual_scan("tv", files, settings)
 
 
 def manual_scan_all_job():
     settings = get_settings()
-    files = media_files(settings["movie_folder"], settings) + media_files(settings["tv_folder"], settings)
+    files = (
+        media_files(settings["movie_folder"], settings, update_inventory=True)
+        + media_files(settings["tv_folder"], settings, update_inventory=True)
+    )
     run_manual_scan("all", files, settings)
 
 
 def run_manual_scan(kind, files, settings):
     total = len(files)
-    update_job("file_management", total=total, stage="Inventory", message=f"Found {total} files to scan", activity=f"Inventory complete: {total} files")
+    update_job(
+        "file_management",
+        total=total,
+        workers=1,
+        stage="Inventory",
+        message=f"Found {total} files to scan. File Management uses one move worker to avoid folder collisions.",
+        activity=f"Inventory complete: {total} files queued for {kind} scan",
+    )
     if total == 0:
         movie_inventory = library_inventory(settings["movie_folder"], settings)
         tv_inventory = library_inventory(settings["tv_folder"], settings)
@@ -2406,10 +2394,11 @@ def run_manual_scan(kind, files, settings):
         try:
             update_job(
                 "file_management",
-                stage="Checking",
+                stage="Metadata",
                 current_folder=str(path.parent),
                 current_file=path.name,
-                message=f"Checking {path.name}",
+                message=f"Reading filename, metadata, and quality for {path.name}",
+                activity=f"Checking: {path}",
             )
             if kind == "movie" and parse_tv(path):
                 update_job("file_management", activity=f"Skipped TV-looking file during movie scan: {path.name}")
@@ -2424,10 +2413,11 @@ def run_manual_scan(kind, files, settings):
                 stage="Planning",
                 current_folder=str(target.parent) if target else str(path.parent),
                 current_file=path.name,
-                message=f"Planned target for {path.name}",
+                message=f"Planned destination: {target}",
+                activity=f"Plan: {path.name} -> {target}",
             )
             if target and path.resolve() != target.resolve():
-                update_job("file_management", stage="Renaming", message=f"Moving {path.name} into {target.parent}")
+                update_job("file_management", stage="Moving", message=f"Creating folders and moving {path.name} into {target.parent}", activity=f"Moving: {path} -> {target}")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 final_target = unique_path(target)
                 shutil.move(str(path), str(final_target))
@@ -2454,12 +2444,12 @@ def run_manual_scan(kind, files, settings):
         progress = 100 if not total else int((index / total) * 100)
         update_job(
             "file_management",
-            stage="Scanning",
+            stage="Verifying",
             progress=progress,
             processed=index,
             changed=changed,
             failed=failed,
-            message=f"Scanned {index} of {total}. Renamed/moved {changed}; failed {failed}",
+            message=f"Verified {index} of {total}. Renamed/moved {changed}; failed {failed}",
         )
     update_job(
         "file_management",
@@ -2500,11 +2490,19 @@ def manual_library_target(path, settings):
 
 def duplicate_scan_job():
     settings = get_settings()
-    movie_files = media_files(settings["movie_folder"], settings)
-    tv_files = media_files(settings["tv_folder"], settings)
+    movie_files = media_files(settings["movie_folder"], settings, update_inventory=True)
+    tv_files = media_files(settings["tv_folder"], settings, update_inventory=True)
     files = movie_files + tv_files
     total = len(files)
-    update_job("duplicate_checker", total=total, stage="Inventory", message=f"Scanning {total} library files", activity=f"Inventory: {len(movie_files)} movie files, {len(tv_files)} TV files")
+    workers = max(1, MEDIA_SCAN_WORKERS)
+    update_job(
+        "duplicate_checker",
+        total=total,
+        workers=workers,
+        stage="Inventory",
+        message=f"Found {total} library files. Duplicate indexing will use {workers} worker(s).",
+        activity=f"Inventory: {len(movie_files)} movie files, {len(tv_files)} TV files, {workers} worker(s)",
+    )
     if total == 0:
         movie_inventory = library_inventory(settings["movie_folder"], settings)
         tv_inventory = library_inventory(settings["tv_folder"], settings)
@@ -2522,7 +2520,6 @@ def duplicate_scan_job():
         add_event("system", "error", "duplicate-checker", message=message)
         return
     groups = {}
-    workers = max(1, MEDIA_SCAN_WORKERS)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(duplicate_key, path, settings): path for path in files}
         for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
@@ -2544,7 +2541,9 @@ def duplicate_scan_job():
                 current_file=path.name,
                 progress=progress,
                 processed=index,
-                message=f"Indexed {index} of {total} files with {workers} worker(s)",
+                workers=workers,
+                message=f"Indexed {index} of {total} files with {workers} worker(s). Current: {path.name}",
+                activity=f"Indexed: {path.name}",
             )
     findings = []
     update_job("duplicate_checker", stage="Analyzing", progress=75, message=f"Analyzing {len(groups)} media groups", activity=f"Analyzing {len(groups)} grouped media keys")
@@ -2590,23 +2589,34 @@ def duplicate_key(path, settings):
 
 def malware_scan_movies_job():
     settings = get_settings()
-    run_malware_library_scan("movies", media_files(settings["movie_folder"], settings), settings)
+    run_malware_library_scan("movies", media_files(settings["movie_folder"], settings, update_inventory=True), settings)
 
 
 def malware_scan_tv_job():
     settings = get_settings()
-    run_malware_library_scan("tv", media_files(settings["tv_folder"], settings), settings)
+    run_malware_library_scan("tv", media_files(settings["tv_folder"], settings, update_inventory=True), settings)
 
 
 def malware_scan_all_job():
     settings = get_settings()
-    files = media_files(settings["movie_folder"], settings) + media_files(settings["tv_folder"], settings)
+    files = (
+        media_files(settings["movie_folder"], settings, update_inventory=True)
+        + media_files(settings["tv_folder"], settings, update_inventory=True)
+    )
     run_malware_library_scan("all", files, settings)
 
 
 def run_malware_library_scan(kind, files, settings):
     total = len(files)
-    update_job("malware_scanner", total=total, stage="Inventory", message=f"Found {total} files to scan", activity=f"Inventory complete: {total} files")
+    workers = max(1, MALWARE_SCAN_WORKERS)
+    update_job(
+        "malware_scanner",
+        total=total,
+        workers=workers,
+        stage="Inventory",
+        message=f"Found {total} files to scan. ClamAV will use {workers} worker(s).",
+        activity=f"Inventory complete: {total} files, {workers} ClamAV worker(s)",
+    )
     if not malware_enabled(settings):
         message = "Malware scanning is disabled in Settings"
         update_job("malware_scanner", running=False, stage="Complete", progress=100, message=message, activity=message)
@@ -2629,7 +2639,6 @@ def run_malware_library_scan(kind, files, settings):
     infected = 0
     quarantined = 0
     failed = 0
-    workers = max(1, MALWARE_SCAN_WORKERS)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(run_malware_scan, path, settings): path for path in files}
         for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
@@ -2658,7 +2667,8 @@ def run_malware_library_scan(kind, files, settings):
                 infected=infected,
                 quarantined=quarantined,
                 failed=failed,
-                message=f"Scanned {index} of {total} with {workers} worker(s). Infected {infected}; quarantined {quarantined}; failed {failed}",
+                workers=workers,
+                message=f"Scanned {index} of {total} with {workers} worker(s). Infected {infected}; quarantined {quarantined}; failed {failed}. Current: {path.name}",
                 activity=activity,
             )
 
@@ -3222,7 +3232,7 @@ def file_management_content():
     </section>
     {library_visibility_panel(settings)}
     {file_management_health(job)}
-    {scan_stage_panel(job, ["Starting", "Inventory", "Checking", "Planning", "Renaming", "Scanning", "Complete"])}
+    {scan_stage_panel(job, ["Starting", "Inventory", "Metadata", "Planning", "Moving", "Verifying", "Complete"])}
     {job_panel("Manual Scan Progress", job)}
     {job_activity_panel("Manual Scan Activity", job)}
     """
@@ -3329,6 +3339,7 @@ def inventory_card(title, inventory):
         <dt>Total files</dt><dd>{inventory['total_files']}</dd>
         <dt>Folders</dt><dd>{inventory['folders']}</dd>
         <dt>Scanned</dt><dd>{inventory['scanned_entries']}{' sampled limit reached' if inventory.get('limited') else ''}</dd>
+        <dt>Updated</dt><dd>{html.escape(inventory.get('cached_at_label') or 'Not scanned yet')}</dd>
         <dt>Ignored</dt><dd>{ignored}</dd>
       </dl>
       <ul class="logs">{samples}</ul>
@@ -3420,7 +3431,7 @@ def scan_stage_panel(job, stages):
       <ol class="timeline job-timeline">{items}</ol>
       <div class="pipeline-focus {'moving' if job.get('running') else 'idle'}">
         <strong>{html.escape(job.get('current_file') or 'No active file')}</strong>
-        <span>{html.escape(job.get('current_folder') or job.get('message') or '')}</span>
+        <span>{html.escape(job.get('current_folder') or 'No active folder')}<br>{html.escape(job.get('message') or '')}</span>
       </div>
     </section>
     """
@@ -3453,6 +3464,10 @@ def job_activity_panel(title, job):
 
 def job_panel(title, job):
     progress = max(0, min(100, int(job.get("progress") or 0)))
+    elapsed = job_elapsed_seconds(job)
+    processed = int(job.get("processed") or 0)
+    rate = f"{processed / elapsed:.2f} files/sec" if elapsed and processed else "Waiting"
+    workers = int(job.get("workers") or 0)
     return f"""
     <section class="panel">
       <div class="panel-title">
@@ -3461,9 +3476,31 @@ def job_panel(title, job):
       </div>
       <div class="progress"><span style="width:{progress}%"></span></div>
       <p>{html.escape(job.get('message') or '')}</p>
-      <p class="refresh-note">Processed {int(job.get('processed') or 0)} of {int(job.get('total') or 0)}. Last update: {html.escape(job.get('updated_at') or 'Never')}.</p>
+      <p class="refresh-note">Processed {processed} of {int(job.get('total') or 0)}. Workers: {workers or 'n/a'}. Rate: {html.escape(rate)}. Elapsed: {format_elapsed(elapsed)}. Last update: {html.escape(job.get('updated_at') or 'Never')}.</p>
     </section>
     """
+
+
+def job_elapsed_seconds(job):
+    started = job.get("started_at")
+    if not started:
+        return 0
+    try:
+        start = datetime.strptime(started, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 0
+    return max(0, int((datetime.now(timezone.utc) - start).total_seconds()))
+
+
+def format_elapsed(seconds):
+    seconds = int(seconds or 0)
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
 
 
 def duplicate_card(row):
