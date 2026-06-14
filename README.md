@@ -6,6 +6,7 @@ Data Manager watches a downloads folder, detects new video files, renames them, 
 ## Run with Docker Compose
 
 This compose file is set up for the Unraid media paths you provided:
+Edit to your needs
 
 - Downloads watched at `/mnt/user/plex-server-media/downloads/completed`
 - Movies moved to `/mnt/user/plex-server-media/movies`
@@ -38,21 +39,6 @@ The Unraid compose file uses:
 /mnt/user/plex-server-media/tv-shows -> /tv
 ```
 
-## Deploy Without Wiping Production Data
-
-Do not copy the local `data/` folder to production. That folder contains the SQLite database with processing history and settings.
-
-Use one of these safe deploy commands from the dev VM:
-
-```bash
-scp "/home/t0admnmleon/Data Manager/app.py" "/home/t0admnmleon/Data Manager/Dockerfile" "/home/t0admnmleon/Data Manager/docker-compose.yml" "/home/t0admnmleon/Data Manager/README.md" t0admnmleon@10.60.1.221:/home/t0admnmleon/data-manager/
-```
-
-Or, if `rsync` is installed:
-
-```bash
-rsync -av --exclude data --exclude __pycache__ "/home/t0admnmleon/Data Manager/" t0admnmleon@10.60.1.221:/home/t0admnmleon/data-manager/
-```
 
 Open `http://SERVER-IP:8080`.
 
@@ -92,7 +78,7 @@ The app detects TV files from common patterns like `S01E02`, `S01.E02`, `S01 E02
 
 ## Duplicate Review Folder
 
-The compose file mounts `/mnt/unraid/plex-server-media/downloads/to-review` as `/to-review`. If Data Manager finds that the same movie file already exists in the corrected movie folder, or the same TV `SxxEyy` already exists in the corrected season folder, it renames the incoming file and moves it to the review folder instead of adding a duplicate to the library.
+The compose file mounts `/mnt/unraid/plex-server-media/downloads/to-review` as `/to-review`. If Data Manager finds that the same movie file already exists in the corrected movie folder, or the same TV `Batman` already exists in the corrected season folder, it renames the incoming file and moves it to the review folder instead of adding a duplicate to the library.
 
 Review paths use this layout:
 
@@ -222,20 +208,6 @@ Use the `transfer_mode` setting to choose `move` or `copy`. Use `move` if you do
 
 Note: normal Linux, Docker, and SMB/CIFS permissions do not provide a simple "write but cannot delete" mode for a writable directory. If a process can write to a directory, it can usually remove files from that directory. This app-level guard avoids delete calls, but OS-level enforcement requires more advanced storage permissions or snapshots.
 
-## Good Future Features
 
-- Manual review queue for files that cannot be confidently identified.
-- Dry-run mode so you can preview renames before moving files.
-- Duplicate detection and conflict rules.
-- Support for subtitles and sidecar files by language tags.
-- Notifications through Discord, Slack, email, or Gotify.
-- Per-library rules, such as anime handling or 4K movie destinations.
-- Import history search and CSV export.
-- Role-based users if more than one admin will manage it.
-- Health checks for mount availability and write permissions.
-- Approval workflow for low-confidence metadata matches.
-- Retention policies for old logs and completed queue entries.
-=======
-# Data-Manager
-Scans and renames/ moves your media from a single download folder to seprate folders, example if you have tv shows and movies all downloading to the same folder, this will scan each item and it will scan, check for virus's, rename, check if this file already exists, if it doesn't it will move to correct tv or movie folder. Plus more
+
 
