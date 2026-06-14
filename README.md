@@ -196,7 +196,17 @@ Defaults are conservative so large movie batches do not create a huge dashboard 
 
 ## Code Layout
 
-`app.py` remains the web server and processing coordinator. Library walking and inventory collection live in `data_manager_inventory.py` so page rendering can use cached inventory data without accidentally triggering a full folder scan.
+`app.py` remains the web server, route handler, and processing coordinator. Shared runtime code is split into small modules so the app is easier to tune and safer to change:
+
+- `data_manager_config.py`: environment settings, defaults, media extensions, and provider URLs.
+- `data_manager_utils.py`: formatting, safe filenames, resource stats, and small shared helpers.
+- `data_manager_media.py`: filename parsing, ffprobe/quality detection, and canonical movie/TV naming.
+- `data_manager_store.py`: SQLite setup, migrations, settings, events, and log export.
+- `data_manager_jobs.py`: background job state and threaded job launcher.
+- `data_manager_inventory.py`: cached library walking and inventory collection.
+- `data_manager_server.py`: HTTP routes, login/session handling, form posts, and API responses.
+- `data_manager_views.py`: dashboard, settings, logs, scan, duplicate, and malware HTML fragments.
+- `data_manager_assets.py`: dashboard JavaScript, live refresh scripts, loading overlay script, and CSS.
 
 ## Delete Guard
 
@@ -211,6 +221,4 @@ Data Manager defaults to moving media into the destination library:
 Use the `transfer_mode` setting to choose `move` or `copy`. Use `move` if you do not want the original file left in downloads.
 
 Note: normal Linux, Docker, and SMB/CIFS permissions do not provide a simple "write but cannot delete" mode for a writable directory. If a process can write to a directory, it can usually remove files from that directory. This app-level guard avoids delete calls, but OS-level enforcement requires more advanced storage permissions or snapshots.
-
-
 
