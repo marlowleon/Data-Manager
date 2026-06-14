@@ -96,7 +96,7 @@ The File Management page provides manual-only scans for existing libraries:
 - Scan All runs both checks.
 
 Manual scans show a live progress bar, processed count, and completion message. They use the same TMDB/TVmaze matching rules as imports.
-When running directly on Unraid, the File Management and Duplicate Checker pages show full library visibility stats, including supported file counts, total supported media size, folders scanned, ignored extensions, and sample files. Set `DATA_MANAGER_LIBRARY_VISIBILITY_SCAN_LIMIT` above `0` if you ever want to cap that visibility scan again.
+When running directly on Unraid, the File Management and Duplicate Checker pages show cached library visibility stats, including supported file counts, total supported media size, folders scanned, ignored extensions, and sample files. Page loads do not walk the library folders. The cache refreshes when File Management, Duplicate Checker, or Malware Checks runs manually or on schedule.
 
 ## Duplicate Checker
 
@@ -194,6 +194,10 @@ The scanner is intentionally bounded for large imports:
 
 Defaults are conservative so large movie batches do not create a huge dashboard response or Python memory spike. Linux and Docker may still show high memory during large SMB/CIFS copies because the kernel uses free RAM as filesystem cache; that memory is normally reclaimable and is not the app loading the whole movie into Python.
 
+## Code Layout
+
+`app.py` remains the web server and processing coordinator. Library walking and inventory collection live in `data_manager_inventory.py` so page rendering can use cached inventory data without accidentally triggering a full folder scan.
+
 ## Delete Guard
 
 Data Manager defaults to moving media into the destination library:
@@ -207,7 +211,6 @@ Data Manager defaults to moving media into the destination library:
 Use the `transfer_mode` setting to choose `move` or `copy`. Use `move` if you do not want the original file left in downloads.
 
 Note: normal Linux, Docker, and SMB/CIFS permissions do not provide a simple "write but cannot delete" mode for a writable directory. If a process can write to a directory, it can usually remove files from that directory. This app-level guard avoids delete calls, but OS-level enforcement requires more advanced storage permissions or snapshots.
-
 
 
 

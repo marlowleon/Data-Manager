@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY app.py /app/app.py
+COPY data_manager_inventory.py /app/data_manager_inventory.py
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg clamav clamav-freshclam \
