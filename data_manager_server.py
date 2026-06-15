@@ -3,7 +3,9 @@ import hashlib
 import hmac
 import html
 import json
+import secrets
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -12,7 +14,7 @@ from data_manager_assets import CSS, DASHBOARD_JS, DUPLICATES_JS, FILE_MANAGEMEN
 from data_manager_config import ADMIN_PASSWORD, ADMIN_USER, APP_NAME, DEFAULT_SETTINGS, SESSION_SECRET
 from data_manager_jobs import start_background_job
 from data_manager_store import add_event, clear_events, export_events, get_events, get_settings, save_settings
-from data_manager_utils import now_iso
+from data_manager_utils import now_iso, setting_enabled
 from data_manager_views import (
     dashboard_content,
     dashboard_error_panel,
@@ -107,11 +109,104 @@ def alert_count():
     return _context_call("alert_count")
 
 
+def is_critical_alert(row):
+    if row["status"] != "error":
+        return False
+    text = f"{row['media_type']} {row['original_path']} {row['message'] or ''}".lower()
+    critical_terms = [
+        "preflight", "mount", "watch folder", "database", "tmdb", "api key",
+        "connection failed", "metadata provider down", "pushover", "clamav",
+        "malware quarantined", "high cpu", "memory", "not writable",
+    ]
+    return any(term in text for term in critical_terms)
+
+
+def sso_ready(settings):
+    required = [
+        "sso_client_id",
+        "sso_client_secret",
+        "sso_authorize_url",
+        "sso_token_url",
+        "sso_userinfo_url",
+    ]
+    return setting_enabled(settings, "sso_enabled") and all(settings.get(key, "").strip() for key in required)
+
+
+def sso_redirect_uri(settings, handler):
+    configured = settings.get("sso_redirect_uri", "").strip()
+    if configured:
+        return configured
+    proto = handler.headers.get("X-Forwarded-Proto", "http").split(",")[0].strip() or "http"
+    host = handler.headers.get("X-Forwarded-Host") or handler.headers.get("Host", "")
+    return f"{proto}://{host}/sso/callback"
+
+
+def fetch_sso_userinfo(settings, code, redirect_uri):
+    token_payload = urllib.parse.urlencode({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": settings["sso_client_id"].strip(),
+        "client_secret": settings["sso_client_secret"].strip(),
+    }).encode("utf-8")
+    token_request = urllib.request.Request(
+        settings["sso_token_url"].strip(),
+        data=token_payload,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(token_request, timeout=20) as response:
+        token_data = json.loads(response.read().decode("utf-8"))
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise ValueError("Provider did not return an access token")
+    userinfo_request = urllib.request.Request(
+        settings["sso_userinfo_url"].strip(),
+        headers={"Accept": "application/json", "Authorization": f"Bearer {access_token}"},
+    )
+    with urllib.request.urlopen(userinfo_request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def sso_identity(settings, userinfo):
+    for key in ("email", "preferred_username", "username", "sub"):
+        value = str(userinfo.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def sso_identity_allowed(settings, identity):
+    identity_lower = identity.lower()
+    users = csv_setting(settings.get("sso_allowed_users", ""))
+    domains = csv_setting(settings.get("sso_allowed_domains", ""))
+    if users and identity_lower in users:
+        return True
+    if domains and "@" in identity_lower:
+        domain = identity_lower.rsplit("@", 1)[1]
+        if domain in domains:
+            return True
+    if users or domains:
+        return False
+    return True
+
+
+def csv_setting(value):
+    return {item.strip().lower() for item in str(value).split(",") if item.strip()}
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urllib.parse.urlparse(self.path).path
         if route == "/login":
             self.render_login()
+        elif route == "/sso/login":
+            self.start_sso_login()
+        elif route == "/sso/callback":
+            self.finish_sso_login()
         elif route == "/logout":
             self.redirect("/login", clear_cookie=True)
         elif not self.authenticated():
@@ -211,9 +306,22 @@ class Handler(BaseHTTPRequestHandler):
         cookies = self.headers.get("Cookie", "")
         for item in cookies.split(";"):
             key, _, value = item.strip().partition("=")
-            if key == "dm_session" and verify_signed(value) == admin_user:
+            if key != "dm_session":
+                continue
+            session_user = verify_signed(value)
+            if session_user == admin_user:
+                return True
+            if session_user and session_user.startswith("sso:") and setting_enabled(settings, "sso_enabled"):
                 return True
         return False
+
+    def cookie_value(self, name):
+        cookies = self.headers.get("Cookie", "")
+        for item in cookies.split(";"):
+            key, _, value = item.strip().partition("=")
+            if key == name:
+                return value
+        return ""
 
     def redirect(self, location, cookie=None, clear_cookie=False):
         self.send_response(302)
@@ -222,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", f"dm_session={cookie}; HttpOnly; SameSite=Lax; Path=/")
         if clear_cookie:
             self.send_header("Set-Cookie", "dm_session=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/")
+            self.send_header("Set-Cookie", "dm_sso_state=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/")
         self.end_headers()
 
     def page(self, title, content):
@@ -273,10 +382,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def render_login(self, error=""):
         message = f"<p class='error'>{html.escape(error)}</p>" if error else ""
+        settings = get_settings()
+        sso_button = ""
+        if sso_ready(settings):
+            provider = html.escape(settings.get("sso_provider_name") or "SSO")
+            sso_button = f"""
+            <div class="sso-login">
+              <a class="button-link" href="/sso/login">Continue with {provider}</a>
+            </div>
+            """
         self.page("Login", f"""
         <section class="login">
           <h2>Admin Login</h2>
           {message}
+          {sso_button}
           <form method="post" action="/login">
             <label>Username <input name="username" autocomplete="username" required></label>
             <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
@@ -284,6 +403,55 @@ class Handler(BaseHTTPRequestHandler):
           </form>
         </section>
         """)
+
+    def start_sso_login(self):
+        settings = get_settings()
+        if not sso_ready(settings):
+            self.render_login("SSO is not fully configured yet")
+            return
+        state = secrets.token_urlsafe(24)
+        params = {
+            "response_type": "code",
+            "client_id": settings["sso_client_id"].strip(),
+            "redirect_uri": sso_redirect_uri(settings, self),
+            "scope": settings.get("sso_scope", "openid email profile").strip() or "openid email profile",
+            "state": state,
+        }
+        authorize_url = settings["sso_authorize_url"].strip()
+        separator = "&" if "?" in authorize_url else "?"
+        location = authorize_url + separator + urllib.parse.urlencode(params)
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Set-Cookie", f"dm_sso_state={sign(state)}; HttpOnly; SameSite=Lax; Path=/")
+        self.end_headers()
+
+    def finish_sso_login(self):
+        settings = get_settings()
+        if not sso_ready(settings):
+            self.render_login("SSO is not fully configured yet")
+            return
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if query.get("error"):
+            self.render_login(f"SSO failed: {query.get('error_description', query['error'])[0]}")
+            return
+        state = (query.get("state") or [""])[0]
+        code = (query.get("code") or [""])[0]
+        if not code or not state or verify_signed(self.cookie_value("dm_sso_state")) != state:
+            self.render_login("SSO failed: invalid login state")
+            return
+        try:
+            userinfo = fetch_sso_userinfo(settings, code, sso_redirect_uri(settings, self))
+            identity = sso_identity(settings, userinfo)
+            if not identity:
+                raise ValueError("Provider did not return an email, username, or subject")
+            if not sso_identity_allowed(settings, identity):
+                raise ValueError(f"{identity} is not allowed to access Data Manager")
+        except Exception as exc:
+            add_event("system", "error", "sso", message=f"SSO login failed: {exc}")
+            self.render_login(f"SSO failed: {exc}")
+            return
+        add_event("system", "done", "sso", message=f"SSO login successful for {identity}")
+        self.redirect("/", cookie=sign(f"sso:{identity}"))
 
     def render_dashboard(self):
         try:
@@ -418,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
     def render_alerts(self):
         rows = [
             row for row in get_events(300)
-            if row["status"] == "error"
+            if is_critical_alert(row)
         ]
         self.page("Alerts", f"""
         <section class="panel">

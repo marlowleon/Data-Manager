@@ -66,6 +66,23 @@ def init_db():
                 recommendation text,
                 status text not null default 'open'
             );
+            create table if not exists job_stats (
+                job_name text primary key,
+                updated_at text not null,
+                last_started_at text,
+                last_completed_at text,
+                last_success_at text,
+                last_status text,
+                message text,
+                total integer not null default 0,
+                processed integer not null default 0,
+                changed integer not null default 0,
+                failed integer not null default 0,
+                open_count integer not null default 0,
+                resolved_count integer not null default 0,
+                infected integer not null default 0,
+                quarantined integer not null default 0
+            );
             """
         )
         ensure_duplicate_schema(conn)
@@ -143,6 +160,57 @@ def save_settings(values):
                 (key, values.get(key, DEFAULT_SETTINGS[key]).strip()),
             )
         conn.commit()
+
+
+def save_job_stat(job_name, job):
+    with db_lock, db() as conn:
+        conn.execute(
+            """
+            insert into job_stats
+            (job_name, updated_at, last_started_at, last_completed_at, last_success_at, last_status, message,
+             total, processed, changed, failed, open_count, resolved_count, infected, quarantined)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(job_name) do update set
+                updated_at = excluded.updated_at,
+                last_started_at = excluded.last_started_at,
+                last_completed_at = excluded.last_completed_at,
+                last_success_at = excluded.last_success_at,
+                last_status = excluded.last_status,
+                message = excluded.message,
+                total = excluded.total,
+                processed = excluded.processed,
+                changed = excluded.changed,
+                failed = excluded.failed,
+                open_count = excluded.open_count,
+                resolved_count = excluded.resolved_count,
+                infected = excluded.infected,
+                quarantined = excluded.quarantined
+            """,
+            (
+                job_name,
+                now_iso(),
+                job.get("started_at") or "",
+                job.get("updated_at") or now_iso(),
+                job.get("last_success_at") or "",
+                "running" if job.get("running") else (job.get("stage") or "Complete"),
+                job.get("message") or "",
+                int(job.get("total") or 0),
+                int(job.get("processed") or 0),
+                int(job.get("changed") or 0),
+                int(job.get("failed") or 0),
+                int(job.get("open_count") or 0),
+                int(job.get("resolved_count") or 0),
+                int(job.get("infected") or 0),
+                int(job.get("quarantined") or 0),
+            ),
+        )
+        conn.commit()
+
+
+def get_job_stat(job_name):
+    with db_lock, db() as conn:
+        row = conn.execute("select * from job_stats where job_name = ?", (job_name,)).fetchone()
+    return dict(row) if row else {}
 
 
 def add_event(media_type, status, original_path, renamed_to=None, moved_to=None, message=None):

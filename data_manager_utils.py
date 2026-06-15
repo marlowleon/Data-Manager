@@ -88,12 +88,12 @@ def format_elapsed(seconds):
 
 def resource_health_check(name, value):
     if value is None:
-        return {"name": name, "status": "warn", "detail": "Usage unavailable"}
+        return {"name": name, "status": "warn", "detail": "Usage unavailable", "percent": None}
     if isinstance(value, dict):
         percent = value.get("percent")
         detail = value.get("detail")
         if percent is None:
-            return {"name": name, "status": "warn", "detail": detail or "Usage unavailable"}
+            return {"name": name, "status": "warn", "detail": detail or "Usage unavailable", "percent": None}
         extra_detail = detail
         value = percent
     else:
@@ -108,7 +108,7 @@ def resource_health_check(name, value):
         status = "ok"
         label = "good"
     detail = extra_detail or f"{value:.1f}% used ({label})"
-    return {"name": name, "status": status, "detail": detail}
+    return {"name": name, "status": status, "detail": detail, "percent": value}
 
 
 def container_memory_percent():
