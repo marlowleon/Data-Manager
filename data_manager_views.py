@@ -5,7 +5,7 @@ from pathlib import Path
 from data_manager_config import DEFAULT_SETTINGS, DUPLICATE_SCAN_HOUR, MALWARE_SCAN_HOUR, VIDEO_EXTENSIONS
 from data_manager_jobs import get_job
 from data_manager_media import media_info
-from data_manager_store import get_events, get_settings
+from data_manager_store import get_events, get_job_stat, get_settings
 from data_manager_utils import (
     format_audio_channels,
     format_bitrate,
@@ -112,8 +112,8 @@ def system_status_strip():
     malware_job = get_job("malware_scanner")
     return f"""
     <section class="system-strip">
-      {system_metric("CPU", cpu["detail"], cpu["status"])}
-      {system_metric("Memory", memory["detail"], memory["status"])}
+      {system_metric("CPU", cpu["detail"], cpu["status"], cpu.get("percent"))}
+      {system_metric("Memory", memory["detail"], memory["status"], memory.get("percent"))}
       {system_metric("Alerts", str(alerts), "fail" if alerts else "ok")}
       {system_metric("Queue", str(s["queued"]), "warn" if s["queued"] else "ok")}
       {system_metric("File Scan", file_job.get("stage") or "Idle", "warn" if file_job.get("running") else "ok")}
@@ -123,11 +123,16 @@ def system_status_strip():
     """
 
 
-def system_metric(label, value, status):
+def system_metric(label, value, status, percent=None):
+    bar = ""
+    if percent is not None:
+        width = max(0, min(100, int(float(percent))))
+        bar = f"<div class='metric-bar'><b style='width:{width}%'></b></div>"
     return f"""
     <article class="system-metric {html.escape(status)}">
       <strong>{html.escape(label)}</strong>
       <span>{html.escape(value)}</span>
+      {bar}
     </article>
     """
 
@@ -292,19 +297,26 @@ def visibility_badge_text(movie_inventory, tv_inventory):
 
 
 def file_management_health(job):
-    status = "Running" if job.get("running") else ("Healthy" if job.get("last_success_at") else "Ready")
+    saved = get_job_stat("file_management")
+    last_success = job.get("last_success_at") or saved.get("last_success_at") or "Never"
+    changed = job.get("changed") if job.get("running") else saved.get("changed", job.get("changed", 0))
+    failed = job.get("failed") if job.get("running") else saved.get("failed", job.get("failed", 0))
+    status = "Running" if job.get("running") else ("Healthy" if last_success != "Never" else "Ready")
     return f"""
     <section class="stats mini-stats">
       {stat_card("Status", status, job.get("stage") or "Idle")}
-      {stat_card("Last Good Scan", job.get("last_success_at") or "Never", "Completed without failures")}
-      {stat_card("Changed", job.get("changed", 0), "Files renamed or moved")}
-      {stat_card("Failed", job.get("failed", 0), "Needs review")}
+      {stat_card("Last Good Scan", last_success, "Completed without failures")}
+      {stat_card("Changed", changed or 0, "Files renamed or moved")}
+      {stat_card("Failed", failed or 0, "Needs review")}
     </section>
     """
 
 
 def duplicate_health(job, counts):
-    last_success = job.get("last_success_at") or "Never"
+    saved = get_job_stat("duplicate_checker")
+    last_success = job.get("last_success_at") or saved.get("last_success_at") or "Never"
+    open_count = counts["open"] if job.get("running") or counts["open"] else saved.get("open_count", counts["open"])
+    resolved_count = counts["resolved"] if job.get("running") or counts["resolved"] else saved.get("resolved_count", counts["resolved"])
     status = "Running" if job.get("running") else ("Attention" if counts["open"] else "Healthy")
     settings = get_settings()
     hour = settings.get("duplicate_scan_hour", str(DUPLICATE_SCAN_HOUR))
@@ -312,24 +324,27 @@ def duplicate_health(job, counts):
     <section class="stats mini-stats">
       {stat_card("Status", status, job.get("stage") or "Idle")}
       {stat_card("Last Scan", last_success, f"Daily at {hour}:00")}
-      {stat_card("Needs Attention", counts["open"], "Open duplicate pairs")}
-      {stat_card("Resolved", counts["resolved"], "Handled duplicate pairs")}
+      {stat_card("Needs Attention", open_count or 0, "Open duplicate pairs")}
+      {stat_card("Resolved", resolved_count or 0, "Handled duplicate pairs")}
     </section>
     """
 
 
 def malware_health(job, settings):
+    saved = get_job_stat("malware_scanner")
     check = clamav_health_check(settings)
     path_check = path_health_check("Quarantine", settings["quarantine_folder"], needs_write=True)
-    last_success = job.get("last_success_at") or "Never"
-    status = "Running" if job.get("running") else ("Attention" if int(job.get("infected") or 0) else "Ready")
+    last_success = job.get("last_success_at") or saved.get("last_success_at") or "Never"
+    infected = job.get("infected") if job.get("running") else saved.get("infected", job.get("infected", 0))
+    quarantined = job.get("quarantined") if job.get("running") else saved.get("quarantined", job.get("quarantined", 0))
+    status = "Running" if job.get("running") else ("Attention" if int(infected or 0) else "Ready")
     hour = settings.get("malware_daily_hour", str(MALWARE_SCAN_HOUR))
     return f"""
     <section class="stats mini-stats">
       {stat_card("Status", status, job.get("stage") or "Idle")}
       {stat_card("Last Completed Scan", last_success, f"Daily at {hour}:00")}
-      {stat_card("Infected", job.get("infected", 0), "Detected this run")}
-      {stat_card("Quarantined", job.get("quarantined", 0), settings["quarantine_folder"])}
+      {stat_card("Infected", infected or 0, "Detected in last run")}
+      {stat_card("Quarantined", quarantined or 0, settings["quarantine_folder"])}
     </section>
     <section class="panel">
       <div class="panel-title"><h2>Scanner Health</h2><span class="badge {health_badge_class(check['status'])}">{html.escape(check['status'].upper())}</span></div>
@@ -506,6 +521,17 @@ def label_for(key):
     return {
         "admin_user": "Admin username",
         "admin_password": "Admin password",
+        "sso_enabled": "Enable SSO",
+        "sso_provider_name": "SSO provider name",
+        "sso_client_id": "SSO client ID",
+        "sso_client_secret": "SSO client secret",
+        "sso_authorize_url": "SSO authorize URL",
+        "sso_token_url": "SSO token URL",
+        "sso_userinfo_url": "SSO userinfo URL",
+        "sso_redirect_uri": "SSO redirect URI",
+        "sso_scope": "SSO scopes",
+        "sso_allowed_users": "Allowed SSO users",
+        "sso_allowed_domains": "Allowed SSO email domains",
         "watch_folder": "Download watch folder",
         "movie_folder": "Movie library folder",
         "tv_folder": "TV library folder",
@@ -524,7 +550,10 @@ def label_for(key):
         "max_ready_per_scan": "New-file workers",
         "file_management_workers": "File management workers",
         "duplicate_scan_workers": "Duplicate checker workers",
+        "duplicate_schedule": "Schedule",
         "duplicate_scan_hour": "Daily duplicate scan hour",
+        "duplicate_schedule_day": "Duplicate weekly day",
+        "duplicate_schedule_day_of_month": "Duplicate monthly day",
         "malware_scan_workers": "Malware scan workers",
         "ffprobe_timeout": "ffprobe timeout seconds",
         "transfer_chunk_size": "Transfer chunk bytes",
@@ -544,26 +573,35 @@ def label_for(key):
         "notify_malware": "Notify malware quarantines",
         "malware_enabled": "Enable malware scanning",
         "malware_update_definitions": "Auto-update malware definitions",
+        "malware_schedule": "Schedule",
         "malware_daily_hour": "Daily malware scan hour",
+        "malware_schedule_day": "Malware weekly day",
+        "malware_schedule_day_of_month": "Malware monthly day",
     }.get(key, key)
 
 
 SETTINGS_SECTIONS = [
     ("Admin Account", ["admin_user", "admin_password"]),
+    ("Single Sign-On", [
+        "sso_enabled", "sso_provider_name", "sso_client_id", "sso_client_secret",
+        "sso_authorize_url", "sso_token_url", "sso_userinfo_url", "sso_redirect_uri",
+        "sso_scope", "sso_allowed_users", "sso_allowed_domains",
+    ]),
     ("Media Paths", ["watch_folder", "movie_folder", "tv_folder", "review_folder", "quarantine_folder"]),
     ("Processing", [
         "poll_interval", "stable_seconds", "transfer_mode", "movie_extensions",
         "max_ready_per_scan", "file_management_workers", "duplicate_scan_workers",
-        "duplicate_scan_hour", "max_queue_display", "max_requeue_per_click",
+        "max_queue_display", "max_requeue_per_click",
         "max_new_file_events_per_scan",
     ]),
+    ("Automatic Runs", []),
     ("Metadata And Quality", ["metadata_provider", "metadata_enabled", "metadata_required", "tmdb_api_key", "tvmaze_fallback_enabled", "tvmaze_backoff_seconds", "ffprobe_timeout"]),
     ("Pushover", ["pushover_enabled", "pushover_app_token", "pushover_user_key", "pushover_device"]),
     ("Notification Toggles", [
         "notify_success", "notify_failure", "notify_duplicate", "notify_scan_complete",
         "notify_mount_unavailable", "notify_metadata_down", "notify_malware",
     ]),
-    ("Malware Scanner", ["malware_enabled", "malware_update_definitions", "malware_daily_hour", "malware_scan_workers"]),
+    ("Malware Scanner", ["malware_enabled", "malware_update_definitions", "malware_scan_workers"]),
     ("Advanced Transfer", ["transfer_chunk_size"]),
 ]
 
@@ -571,10 +609,13 @@ SETTINGS_SECTIONS = [
 SELECT_OPTIONS = {
     "metadata_provider": ["tmdb"],
     "transfer_mode": ["move", "copy"],
+    "duplicate_schedule": ["disabled", "daily", "weekly", "monthly"],
+    "malware_schedule": ["disabled", "daily", "weekly", "monthly"],
 }
 
 
 YES_NO_SETTINGS = {
+    "sso_enabled",
     "metadata_enabled", "metadata_required", "tvmaze_fallback_enabled", "pushover_enabled", "notify_success",
     "notify_failure", "notify_duplicate", "notify_scan_complete",
     "notify_mount_unavailable", "notify_metadata_down", "notify_malware",
@@ -584,9 +625,34 @@ YES_NO_SETTINGS = {
 
 NUMBER_SETTINGS = {
     "poll_interval", "stable_seconds", "max_ready_per_scan", "file_management_workers",
-    "duplicate_scan_workers", "duplicate_scan_hour", "malware_scan_workers", "tvmaze_backoff_seconds",
-    "malware_daily_hour", "ffprobe_timeout", "transfer_chunk_size",
+    "duplicate_scan_workers", "duplicate_scan_hour", "duplicate_schedule_day", "duplicate_schedule_day_of_month",
+    "malware_scan_workers", "tvmaze_backoff_seconds", "malware_daily_hour", "malware_schedule_day",
+    "malware_schedule_day_of_month", "ffprobe_timeout", "transfer_chunk_size",
     "max_queue_display", "max_new_file_events_per_scan", "max_requeue_per_click",
+}
+
+
+SETTING_HELP = {
+    "max_ready_per_scan": "How many new downloads can process at the same time.",
+    "file_management_workers": "Parallel workers for manual library cleanup scans.",
+    "duplicate_scan_workers": "Parallel workers for duplicate indexing.",
+    "malware_scan_workers": "Parallel ClamAV scans. Keep low if disks slow down.",
+    "duplicate_schedule": "Controls automatic duplicate checker runs.",
+    "malware_schedule": "Controls automatic malware library scans.",
+    "duplicate_schedule_day": "0 Monday through 6 Sunday.",
+    "malware_schedule_day": "0 Monday through 6 Sunday.",
+    "duplicate_schedule_day_of_month": "1 through 31.",
+    "malware_schedule_day_of_month": "1 through 31.",
+    "tmdb_api_key": "Use the TMDB API Key v3 auth value.",
+    "tvmaze_fallback_enabled": "Used only as a fallback for TV episode names.",
+    "tvmaze_backoff_seconds": "How long to pause TVmaze after rate limit errors.",
+    "transfer_chunk_size": "Bytes read per transfer chunk. Larger is not always faster.",
+    "sso_authorize_url": "Use the authorization endpoint from your provider OpenID configuration.",
+    "sso_token_url": "Use the token endpoint from your provider OpenID configuration.",
+    "sso_userinfo_url": "Use the userinfo endpoint from your provider OpenID configuration.",
+    "sso_redirect_uri": "Use the exact callback URI registered with your provider, usually http://SERVER:8085/sso/callback or your reverse-proxy URL.",
+    "sso_allowed_users": "Optional comma list. If blank, any valid provider user is allowed unless domains are set.",
+    "sso_allowed_domains": "Optional comma list like example.com. Leave blank to allow any provider domain.",
 }
 
 
@@ -594,6 +660,21 @@ def settings_form(settings):
     rendered_keys = set()
     sections = []
     for title, keys in SETTINGS_SECTIONS:
+        if title == "Automatic Runs":
+            rendered_keys.update({
+                "duplicate_schedule", "duplicate_scan_hour", "duplicate_schedule_day", "duplicate_schedule_day_of_month",
+                "malware_schedule", "malware_daily_hour", "malware_schedule_day", "malware_schedule_day_of_month",
+            })
+            sections.append(f"""
+            <section class="settings-section schedule-section">
+              <h3>Automatic Runs</h3>
+              <div class="schedule-grid">
+                {schedule_card(settings, "duplicate", "Duplicate Checker", "duplicate_scan_hour")}
+                {schedule_card(settings, "malware", "Malware Scanner", "malware_daily_hour")}
+              </div>
+            </section>
+            """)
+            continue
         fields = []
         for key in keys:
             if key not in DEFAULT_SETTINGS:
@@ -622,8 +703,45 @@ def settings_form(settings):
     return "\n".join(sections)
 
 
+def schedule_card(settings, prefix, title, hour_key):
+    schedule_key = f"{prefix}_schedule"
+    day_key = f"{prefix}_schedule_day"
+    month_day_key = f"{prefix}_schedule_day_of_month"
+    mode = settings.get(schedule_key, "daily")
+    mode_options = "".join(
+        f"<option value='{option}' {'selected' if mode == option else ''}>{option.title()}</option>"
+        for option in ["disabled", "daily", "weekly", "monthly"]
+    )
+    hour = html.escape(str(settings.get(hour_key, "3")))
+    weekly = html.escape(str(settings.get(day_key, "0")))
+    monthly = html.escape(str(settings.get(month_day_key, "1")))
+    return f"""
+    <article class="schedule-card">
+      <div>
+        <strong>{html.escape(title)}</strong>
+        <small>Choose when this automatic job runs. Weekly day uses 0 Monday through 6 Sunday.</small>
+      </div>
+      <label>Run
+        <select name="{html.escape(schedule_key)}">{mode_options}</select>
+      </label>
+      <label>Hour
+        <input name="{html.escape(hour_key)}" type="number" min="0" max="23" value="{hour}">
+        <small>0 through 23 server time.</small>
+      </label>
+      <label>Weekly Day
+        <input name="{html.escape(day_key)}" type="number" min="0" max="6" value="{weekly}">
+      </label>
+      <label>Monthly Day
+        <input name="{html.escape(month_day_key)}" type="number" min="1" max="31" value="{monthly}">
+      </label>
+    </article>
+    """
+
+
 def settings_field(key, value):
     label = html.escape(label_for(key))
+    help_text = SETTING_HELP.get(key, "")
+    help_html = f"<small>{html.escape(help_text)}</small>" if help_text else ""
     escaped_key = html.escape(key)
     escaped_value = html.escape(value)
     if key in YES_NO_SETTINGS:
@@ -631,21 +749,21 @@ def settings_field(key, value):
             f"<option value='{option}' {'selected' if str(value).lower() == option else ''}>{option.title()}</option>"
             for option in ["yes", "no"]
         )
-        return f"<label>{label}<select name='{escaped_key}'>{options}</select></label>"
+        return f"<label>{label}<select name='{escaped_key}'>{options}</select>{help_html}</label>"
     if key in SELECT_OPTIONS:
         options = "".join(
             f"<option value='{html.escape(option)}' {'selected' if value == option else ''}>{html.escape(option)}</option>"
             for option in SELECT_OPTIONS[key]
         )
-        return f"<label>{label}<select name='{escaped_key}'>{options}</select></label>"
-    input_type = "password" if key in {"admin_password", "tmdb_api_key", "pushover_app_token", "pushover_user_key"} else "text"
+        return f"<label>{label}<select name='{escaped_key}'>{options}</select>{help_html}</label>"
+    input_type = "password" if key in {"admin_password", "tmdb_api_key", "pushover_app_token", "pushover_user_key", "sso_client_secret"} else "text"
     if key in NUMBER_SETTINGS:
         input_type = "number"
     autocomplete = "off" if input_type == "password" else ""
     return (
         f"<label>{label}"
         f"<input name='{escaped_key}' type='{input_type}' value='{escaped_value}' autocomplete='{autocomplete}'>"
-        "</label>"
+        f"{help_html}</label>"
     )
 
 

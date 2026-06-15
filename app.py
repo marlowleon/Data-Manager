@@ -941,7 +941,7 @@ def conflict_decision(incoming, existing, settings, media_type, folder_name, sub
             "review_dir": existing_review_dir,
             "duplicate_status": (
                 f"Incoming file appears higher quality than {existing.name}; "
-                f"moving existing file to review and keeping incoming in library"
+                f"deleting lower-quality existing video after upgrade verifies"
             ),
         }
     return {
@@ -1161,7 +1161,7 @@ def process_file(path, settings):
         transfer_mode = "move"
     expected_size = path.stat().st_size
     target_dir.mkdir(parents=True, exist_ok=True)
-    handle_conflict_action(plan, settings)
+    replacement = handle_conflict_action(plan, settings)
     if transfer_mode == "move":
         transfer_file_with_progress(path, target_file)
     else:
@@ -1170,7 +1170,26 @@ def process_file(path, settings):
     verify_target_file(target_file, expected_size)
     if transfer_mode == "move" and path.exists():
         path.unlink()
-    transfer_sidecars(path, target_dir, target_file.stem, transfer_mode)
+    sidecars = transfer_sidecars(path, target_dir, target_file.stem, transfer_mode)
+    preserved_sidecars = finalize_replacement_conflict(plan, replacement, settings)
+    if sidecars:
+        add_event(
+            plan["media_type"],
+            "stage_moving",
+            path,
+            plan["renamed_to"],
+            str(target_file),
+            f"Moved {len(sidecars)} subtitle/sidecar file(s) with the media file",
+        )
+    if preserved_sidecars:
+        add_event(
+            plan["media_type"],
+            "stage_moving",
+            path,
+            plan["renamed_to"],
+            str(target_file),
+            f"Preserved {len(preserved_sidecars)} subtitle/sidecar file(s) from the replaced lower-quality copy",
+        )
     set_file_stage(path, "completed", f"Completed and verified at {target_file}", target_path=target_file)
     add_event(
         plan["media_type"],
@@ -1199,22 +1218,39 @@ def handle_conflict_action(plan, settings):
     if plan.get("conflict_action") != "replace_with_incoming":
         if plan.get("duplicate"):
             notify_duplicate(settings, plan["duplicate_status"], plan.get("existing_duplicate"), plan["target_file"])
-        return
+        return None
     existing = plan.get("existing_duplicate")
-    review_target_path = plan.get("existing_review_target")
-    if not existing or not review_target_path or not Path(existing).exists():
-        return
-    review_target_path = unique_path(Path(review_target_path))
-    review_target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(existing), str(review_target_path))
+    if not existing or not Path(existing).exists():
+        return None
+    existing = Path(existing)
+    target_file = Path(plan["target_file"])
+    delete_path = existing
+    if existing.resolve() == target_file.resolve():
+        hold_path = unique_path(existing.with_name(f".{existing.stem}.data-manager-replace{existing.suffix.lower()}"))
+        shutil.move(str(existing), str(hold_path))
+        delete_path = hold_path
+    return {"delete_path": delete_path, "sidecar_source": existing}
+
+
+def finalize_replacement_conflict(plan, replacement, settings):
+    if not replacement:
+        return []
+    delete_path = Path(replacement["delete_path"])
+    sidecar_source = Path(replacement["sidecar_source"])
+    target_file = Path(plan["target_file"])
+    sidecars = transfer_sidecars(sidecar_source, target_file.parent, target_file.stem, "move")
+    if delete_path.exists():
+        delete_path.unlink()
+    sidecar_note = f" and preserved {len(sidecars)} sidecar file(s)" if sidecars else ""
     add_event(
         plan["media_type"],
         "stage_duplicate_check",
-        existing,
-        moved_to=str(review_target_path),
-        message=f"Smart conflict: moved lower-quality existing file to review: {review_target_path}",
+        sidecar_source,
+        moved_to=str(target_file),
+        message=f"Smart conflict: deleted lower-quality existing video after upgrade verification{sidecar_note}: {sidecar_source}",
     )
-    notify_duplicate(settings, plan["duplicate_status"], existing, review_target_path)
+    notify_duplicate(settings, plan["duplicate_status"], sidecar_source, target_file)
+    return sidecars
 
 
 def transfer_file_with_progress(source, target):
@@ -1247,15 +1283,86 @@ def verify_target_file(target, expected_size):
 
 
 def transfer_sidecars(source_video, target_dir, target_stem, transfer_mode):
+    transferred = []
     for sibling in source_video.parent.iterdir():
         if sibling == source_video or sibling.suffix.lower() not in SIDE_EXTENSIONS:
             continue
-        if sibling.stem.lower() == source_video.stem.lower():
-            target = unique_path(target_dir / f"{target_stem}{sibling.suffix.lower()}")
-            if transfer_mode == "move":
-                shutil.move(str(sibling), str(target))
-            else:
-                shutil.copy2(str(sibling), str(target))
+        target = sidecar_target_path(source_video, sibling, target_dir, target_stem)
+        if not target:
+            continue
+        target = unique_path(target)
+        if transfer_mode == "move":
+            shutil.move(str(sibling), str(target))
+        else:
+            shutil.copy2(str(sibling), str(target))
+        transferred.append((sibling, target))
+    return transferred
+
+
+def sidecar_target_path(source_video, sidecar, target_dir, target_stem):
+    descriptor = sidecar_descriptor(source_video.stem, sidecar.stem)
+    if descriptor is None:
+        return None
+    return Path(target_dir) / f"{target_stem}{descriptor}{sidecar.suffix.lower()}"
+
+
+def sidecar_descriptor(video_stem, sidecar_stem):
+    video_raw = str(video_stem).strip()
+    sidecar_raw = str(sidecar_stem).strip()
+    if not video_raw or not sidecar_raw:
+        return None
+
+    video_lower = video_raw.lower()
+    sidecar_lower = sidecar_raw.lower()
+    if sidecar_lower == video_lower:
+        return ""
+
+    if sidecar_lower.startswith(video_lower):
+        suffix = sidecar_raw[len(video_raw):]
+        if not suffix or suffix[0] in ".-_ ":
+            descriptor = clean_sidecar_descriptor(suffix)
+            return descriptor
+
+    video_norm = normalize_sidecar_stem(video_raw)
+    sidecar_norm = normalize_sidecar_stem(sidecar_raw)
+    if sidecar_norm == video_norm:
+        return ""
+
+    if sidecar_norm.startswith(f"{video_norm} "):
+        tail = sidecar_norm[len(video_norm):].strip()
+        descriptor = clean_sidecar_descriptor(tail)
+        if descriptor is not None:
+            return descriptor
+
+    return None
+
+
+def normalize_sidecar_stem(value):
+    value = re.sub(r"[._-]+", " ", str(value).lower())
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def clean_sidecar_descriptor(value):
+    parts = [part.lower() for part in re.split(r"[^A-Za-z0-9]+", str(value)) if part]
+    if not parts:
+        return ""
+    allowed_words = {
+        "english", "spanish", "french", "german", "italian", "portuguese",
+        "japanese", "korean", "chinese",
+        "forced", "foreign", "sdh", "hi", "cc", "default", "commentary", "signs", "songs",
+    }
+    if len(parts) > 4 or any(not sidecar_descriptor_part_allowed(part, allowed_words) for part in parts):
+        return None
+    return "." + ".".join(parts)
+
+
+def sidecar_descriptor_part_allowed(part, allowed_words):
+    return (
+        part in allowed_words
+        or bool(re.fullmatch(r"[a-z]{2,3}", part))
+        or bool(re.fullmatch(r"\d{1,2}", part))
+    )
 
 
 def cleanup_source_folder(source_video, settings):
@@ -1680,6 +1787,7 @@ def run_manual_scan(kind, files, settings):
             message=message,
             activity=message,
         )
+        persist_job_stat("file_management")
         add_event("system", "error", "file-management", message=message)
         return
     counters = {"changed": 0, "failed": 0, "processed": 0}
@@ -1749,6 +1857,7 @@ def run_manual_scan(kind, files, settings):
         message=f"Manual scan complete. Renamed/moved {counters['changed']}; failed {counters['failed']}",
         activity=f"Manual scan complete: {counters['changed']} changed, {counters['failed']} failed",
     )
+    persist_job_stat("file_management")
     add_event("system", "done", "file-management", message=f"Manual {kind} scan complete: {counters['changed']} changed, {counters['failed']} failed")
     notify_scan_complete(settings, "File Management", f"Manual {kind} scan complete: {counters['changed']} changed, {counters['failed']} failed")
 
@@ -1803,6 +1912,7 @@ def duplicate_scan_job():
             message=message,
             activity=message,
         )
+        persist_job_stat("duplicate_checker")
         add_event("system", "error", "duplicate-checker", message=message)
         return
     groups = {}
@@ -1856,6 +1966,7 @@ def duplicate_scan_job():
         message=f"Duplicate scan complete. Found {len(findings)} duplicate pair(s)",
         activity=f"Duplicate scan complete: {len(findings)} pair(s), {counts['open']} need attention",
     )
+    persist_job_stat("duplicate_checker")
     add_event("system", "done", "duplicate-checker", message=f"Duplicate scan complete: {len(findings)} duplicate pair(s)")
     notify_scan_complete(settings, "Duplicate Scan", f"Duplicate scan complete: {len(findings)} duplicate pair(s); {counts['open']} need attention")
 
@@ -1906,11 +2017,13 @@ def run_malware_library_scan(kind, files, settings):
     if not malware_enabled(settings):
         message = "Malware scanning is disabled in Settings"
         update_job("malware_scanner", running=False, stage="Complete", progress=100, message=message, activity=message)
+        persist_job_stat("malware_scanner")
         add_event("system", "error", "malware-scanner", message=message)
         return
     if total == 0:
         message = "No supported video files found for malware scan"
         update_job("malware_scanner", running=False, stage="Complete", progress=100, processed=0, total=0, message=message, activity=message)
+        persist_job_stat("malware_scanner")
         add_event("system", "done", "malware-scanner", message=message)
         return
     definitions_ok, definition_detail = ensure_malware_definitions(settings, force=False)
@@ -1918,6 +2031,7 @@ def run_malware_library_scan(kind, files, settings):
     if not definitions_ok:
         message = f"Cannot run malware scan: {definition_detail}"
         update_job("malware_scanner", running=False, stage="Failed", progress=100, failed=total, last_error=message, message=message, activity=message)
+        persist_job_stat("malware_scanner")
         add_event("system", "error", "malware-scanner", message=message)
         notify_failure(settings, "malware-scanner", message)
         return
@@ -1977,6 +2091,7 @@ def run_malware_library_scan(kind, files, settings):
         message=message,
         activity=message,
     )
+    persist_job_stat("malware_scanner")
     add_event("system", "done" if failed == 0 else "error", "malware-scanner", message=message)
     notify_scan_complete(settings, "Malware Scan", message)
 
@@ -2016,12 +2131,24 @@ def duplicate_status_counts():
     return counts
 
 
+def persist_job_stat(name):
+    save_job_stat(name, get_job(name))
+
+
+def is_critical_alert(row):
+    if row["status"] != "error":
+        return False
+    text = f"{row['media_type']} {row['original_path']} {row['message'] or ''}".lower()
+    critical_terms = [
+        "preflight", "mount", "watch folder", "database", "tmdb", "api key",
+        "connection failed", "metadata provider down", "pushover", "clamav",
+        "malware quarantined", "high cpu", "memory", "not writable",
+    ]
+    return any(term in text for term in critical_terms)
+
+
 def alert_count():
-    with db_lock, db() as conn:
-        row = conn.execute(
-            "select count(*) as total from events where status = 'error'"
-        ).fetchone()
-    return row["total"] if row else 0
+    return sum(1 for row in get_events(300) if is_critical_alert(row))
 
 
 def delete_duplicate_file(result_id, side):
@@ -2054,32 +2181,48 @@ def scanner_loop():
         scan_event.clear()
 
 
+def schedule_due(settings, prefix, default_hour, last_run_key):
+    schedule = settings.get(f"{prefix}_schedule", "daily").lower()
+    if schedule == "disabled":
+        return False, last_run_key
+    local = time.localtime()
+    hour = int_setting(settings, f"{prefix}_scan_hour" if prefix == "duplicate" else "malware_daily_hour", default_hour, minimum=0, maximum=23)
+    if local.tm_hour != hour:
+        return False, last_run_key
+    if schedule == "weekly":
+        day = int_setting(settings, f"{prefix}_schedule_day", 0, minimum=0, maximum=6)
+        if local.tm_wday != day:
+            return False, last_run_key
+        key = time.strftime("%Y-%m-%d", local)
+    elif schedule == "monthly":
+        day = int_setting(settings, f"{prefix}_schedule_day_of_month", 1, minimum=1, maximum=31)
+        if local.tm_mday != day:
+            return False, last_run_key
+        key = time.strftime("%Y-%m", local)
+    else:
+        key = time.strftime("%Y-%m-%d", local)
+    return key != last_run_key, key
+
+
 def duplicate_scheduler_loop():
-    last_run_day = None
+    last_run_key = None
     while True:
-        local = time.localtime()
-        day_key = time.strftime("%Y-%m-%d", local)
         settings = get_settings()
-        hour = int_setting(settings, "duplicate_scan_hour", DUPLICATE_SCAN_HOUR, minimum=0, maximum=23)
-        if local.tm_hour == hour and last_run_day != day_key:
+        due, key = schedule_due(settings, "duplicate", DUPLICATE_SCAN_HOUR, last_run_key)
+        if due:
             if start_background_job("duplicate_checker", "Scheduled Duplicate Scan", duplicate_scan_job):
-                last_run_day = day_key
+                last_run_key = key
         time.sleep(60)
 
 
 def malware_scheduler_loop():
-    last_run_day = None
+    last_run_key = None
     while True:
         settings = get_settings()
-        try:
-            hour = int(settings.get("malware_daily_hour", str(MALWARE_SCAN_HOUR)) or MALWARE_SCAN_HOUR)
-        except ValueError:
-            hour = MALWARE_SCAN_HOUR
-        local = time.localtime()
-        day_key = time.strftime("%Y-%m-%d", local)
-        if malware_enabled(settings) and local.tm_hour == hour and last_run_day != day_key:
+        due, key = schedule_due(settings, "malware", MALWARE_SCAN_HOUR, last_run_key)
+        if malware_enabled(settings) and due:
             if start_background_job("malware_scanner", "Scheduled Malware Scan", malware_scan_all_job):
-                last_run_day = day_key
+                last_run_key = key
         time.sleep(60)
 
 

@@ -32,7 +32,10 @@ VIDEO_EXTENSIONS = {
     ".3g2", ".3gp", ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov",
     ".mp4", ".mpeg", ".mpg", ".mts", ".ts", ".vob", ".webm", ".wmv",
 }
-SIDE_EXTENSIONS = {".srt", ".ass", ".ssa", ".sub", ".idx", ".nfo", ".jpg", ".jpeg", ".png"}
+SIDE_EXTENSIONS = {
+    ".srt", ".str", ".ass", ".ssa", ".sub", ".idx", ".vtt", ".sup", ".smi", ".mks", ".ttml", ".dfxp",
+    ".nfo", ".jpg", ".jpeg", ".png",
+}
 IGNORED_WORDS = {
     "1080p", "2160p", "720p", "480p", "bluray", "blu-ray", "webrip",
     "webdl", "web-dl", "hdtv", "hdrip", "dvdrip", "x264", "x265",
@@ -44,6 +47,17 @@ IGNORED_WORDS = {
 DEFAULT_SETTINGS = {
     "admin_user": ADMIN_USER,
     "admin_password": ADMIN_PASSWORD,
+    "sso_enabled": "no",
+    "sso_provider_name": "Authentik",
+    "sso_client_id": "",
+    "sso_client_secret": "",
+    "sso_authorize_url": "",
+    "sso_token_url": "",
+    "sso_userinfo_url": "",
+    "sso_redirect_uri": "",
+    "sso_scope": "openid email profile",
+    "sso_allowed_users": "",
+    "sso_allowed_domains": "",
     "watch_folder": "/watch",
     "movie_folder": "/movies",
     "tv_folder": "/tv",
@@ -62,7 +76,10 @@ DEFAULT_SETTINGS = {
     "max_ready_per_scan": str(MAX_READY_PER_SCAN),
     "file_management_workers": str(FILE_MANAGEMENT_WORKERS),
     "duplicate_scan_workers": str(MEDIA_SCAN_WORKERS),
+    "duplicate_schedule": "daily",
     "duplicate_scan_hour": str(DUPLICATE_SCAN_HOUR),
+    "duplicate_schedule_day": "0",
+    "duplicate_schedule_day_of_month": "1",
     "malware_scan_workers": str(MALWARE_SCAN_WORKERS),
     "ffprobe_timeout": str(FFPROBE_TIMEOUT),
     "transfer_chunk_size": str(TRANSFER_CHUNK_SIZE),
@@ -82,5 +99,8 @@ DEFAULT_SETTINGS = {
     "notify_malware": "yes",
     "malware_enabled": "yes",
     "malware_update_definitions": "yes",
+    "malware_schedule": "daily",
     "malware_daily_hour": str(MALWARE_SCAN_HOUR),
+    "malware_schedule_day": "0",
+    "malware_schedule_day_of_month": "1",
 }
