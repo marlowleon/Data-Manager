@@ -1,15 +1,18 @@
 services:
   data-manager:
-    build: .
+    build:
+      context: .
+      args:
+        DATA_MANAGER_VERSION: ${DATA_MANAGER_VERSION:-1.7.0}
     container_name: data-manager
     restart: unless-stopped
     mem_limit: 4g
     ports:
       - "8085:8080"
     environment:
-      DATA_MANAGER_ADMIN_USER: admin
-      DATA_MANAGER_ADMIN_PASSWORD: changeme
-      DATA_MANAGER_SESSION_SECRET: change-this-long-random-secret
+      DATA_MANAGER_ADMIN_USER: ${DATA_MANAGER_ADMIN_USER:-admin}
+      DATA_MANAGER_ADMIN_PASSWORD: ${DATA_MANAGER_ADMIN_PASSWORD:?Set DATA_MANAGER_ADMIN_PASSWORD in .env}
+      DATA_MANAGER_SESSION_SECRET: ${DATA_MANAGER_SESSION_SECRET:?Set DATA_MANAGER_SESSION_SECRET in .env}
       DATA_MANAGER_PORT: 8080
       DATA_MANAGER_MAX_READY_PER_SCAN: 5
       DATA_MANAGER_MAX_QUEUE_DISPLAY: 50
@@ -25,12 +28,12 @@ services:
       DATA_MANAGER_MALWARE_SCAN_HOUR: 12
       DATA_MANAGER_MALWARE_SCAN_TIMEOUT: 900
       DATA_MANAGER_MALWARE_SCAN_WORKERS: 2
-      TMDB_API_KEY: ""
-    #example volumes for unraid, adjust as needed
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+    # Example volumes for Unraid. Set these paths in .env.
     volumes:
-      - ./data:/data
-      - /mnt/user/plex-server-media/downloads/completed:/watch
-      - /mnt/user/plex-server-media/downloads/to-review:/to-review
-      - /mnt/user/plex-server-media/downloads/quarantine:/quarantine
-      - /mnt/user/plex-server-media/movies:/movies
-      - /mnt/user/plex-server-media/tv-shows:/tv
+      - ${DATA_MANAGER_DATA_DIR:-./data}:/data
+      - ${DATA_MANAGER_WATCH_DIR:?Set DATA_MANAGER_WATCH_DIR in .env}:/watch
+      - ${DATA_MANAGER_REVIEW_DIR:?Set DATA_MANAGER_REVIEW_DIR in .env}:/to-review
+      - ${DATA_MANAGER_QUARANTINE_DIR:?Set DATA_MANAGER_QUARANTINE_DIR in .env}:/quarantine
+      - ${DATA_MANAGER_MOVIE_DIR:?Set DATA_MANAGER_MOVIE_DIR in .env}:/movies
+      - ${DATA_MANAGER_TV_DIR:?Set DATA_MANAGER_TV_DIR in .env}:/tv

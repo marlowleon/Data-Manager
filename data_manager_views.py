@@ -75,7 +75,7 @@ def resource_health_check(*args, **kwargs):
     return _context_call("resource_health_check", *args, **kwargs)
 
 
-def dashboard_content():
+def dashboard_content(can_manage=True):
     events = get_events()
     queue = get_queue()
     s = stats()
@@ -94,7 +94,7 @@ def dashboard_content():
         {watch_visibility_note(s)}
         {queue_limit_note(s)}
         {health_panel(health)}
-        {queue_panel(queue)}
+        {queue_panel(queue, can_manage=can_manage)}
         <section class="columns">
           {event_table("Movies", movie_rows)}
           {event_table("TV Shows", tv_rows)}
@@ -148,9 +148,16 @@ def dashboard_error_panel(exc):
     """
 
 
-def file_management_content():
+def file_management_content(can_manage=True):
     job = get_job("file_management")
     settings = get_settings()
+    actions = """
+      <div class="actions">
+        <form method="post" action="/file-management/run"><input type="hidden" name="scan_type" value="movies"><button type="submit">Scan Movies</button></form>
+        <form method="post" action="/file-management/run"><input type="hidden" name="scan_type" value="tv"><button type="submit">Scan TV</button></form>
+        <form method="post" action="/file-management/run"><input type="hidden" name="scan_type" value="all"><button type="submit">Scan All</button></form>
+      </div>
+    """ if can_manage else "<p class='refresh-note'>View-only access: manual scan controls are hidden.</p>"
     return f"""
     <section class="panel">
       <div class="panel-title">
@@ -158,11 +165,7 @@ def file_management_content():
         <span class="badge {'moving' if job['running'] else 'completed'}">{html.escape(job['kind'])}</span>
       </div>
       <p>Manual scans rename and organize existing movie and TV libraries using the current naming format.</p>
-      <div class="actions">
-        <form method="post" action="/file-management/run"><input type="hidden" name="scan_type" value="movies"><button type="submit">Scan Movies</button></form>
-        <form method="post" action="/file-management/run"><input type="hidden" name="scan_type" value="tv"><button type="submit">Scan TV</button></form>
-        <form method="post" action="/file-management/run"><input type="hidden" name="scan_type" value="all"><button type="submit">Scan All</button></form>
-      </div>
+      {actions}
     </section>
     {library_visibility_panel(settings)}
     {file_management_health(job)}
@@ -172,17 +175,21 @@ def file_management_content():
     """
 
 
-def duplicates_content():
+def duplicates_content(can_manage=True):
     job = get_job("duplicate_checker")
     settings = get_settings()
     rows = get_duplicate_results()
     counts = duplicate_status_counts()
-    cards = "".join(duplicate_card(row) for row in rows) or "<p class='empty'>No duplicate results yet.</p>"
+    cards = "".join(duplicate_card(row, can_manage) for row in rows) or "<p class='empty'>No duplicate results yet.</p>"
+    run_action = (
+        '<form method="post" action="/duplicates/run" class="inline-form"><button type="submit">Run Duplicate Scan</button></form>'
+        if can_manage else "<span class='badge queued'>View-only</span>"
+    )
     return f"""
     <section class="panel">
       <div class="panel-title">
         <h2>Duplicate Checker</h2>
-        <form method="post" action="/duplicates/run" class="inline-form"><button type="submit">Run Duplicate Scan</button></form>
+        {run_action}
       </div>
       <p>Automatic duplicate scans run daily at {int(settings.get('duplicate_scan_hour', DUPLICATE_SCAN_HOUR)):02d}:00 server time. Results stay here until resolved or the next scan refreshes open results.</p>
     </section>
@@ -198,9 +205,16 @@ def duplicates_content():
     """
 
 
-def malware_content():
+def malware_content(can_manage=True):
     job = get_job("malware_scanner")
     settings = get_settings()
+    actions = """
+      <div class="actions">
+        <form method="post" action="/malware/run"><input type="hidden" name="scan_type" value="movies"><button type="submit">Scan Movies</button></form>
+        <form method="post" action="/malware/run"><input type="hidden" name="scan_type" value="tv"><button type="submit">Scan TV</button></form>
+        <form method="post" action="/malware/run"><input type="hidden" name="scan_type" value="all"><button type="submit">Scan All</button></form>
+      </div>
+    """ if can_manage else "<p class='refresh-note'>View-only access: malware scan controls are hidden.</p>"
     events = [
         row for row in get_events(80)
         if "malware" in (row["message"] or "").lower() or row["status"] == "stage_malware_check"
@@ -212,11 +226,7 @@ def malware_content():
         <span class="badge {'moving' if job['running'] else 'completed'}">{html.escape(job['kind'])}</span>
       </div>
       <p>New downloads are scanned before rename planning. Infected files or source folders are moved to quarantine without renaming.</p>
-      <div class="actions">
-        <form method="post" action="/malware/run"><input type="hidden" name="scan_type" value="movies"><button type="submit">Scan Movies</button></form>
-        <form method="post" action="/malware/run"><input type="hidden" name="scan_type" value="tv"><button type="submit">Scan TV</button></form>
-        <form method="post" action="/malware/run"><input type="hidden" name="scan_type" value="all"><button type="submit">Scan All</button></form>
-      </div>
+      {actions}
     </section>
     {malware_health(job, settings)}
     {scan_stage_panel(job, ["Starting", "Inventory", "Update Definitions", "ClamAV Scan", "Quarantine", "Complete"])}
@@ -438,7 +448,7 @@ def job_elapsed_seconds(job):
     return max(0, int((datetime.now(timezone.utc) - start).total_seconds()))
 
 
-def duplicate_card(row):
+def duplicate_card(row, can_manage=True):
     recommendation = row["recommendation"]
     a_best = row["file_a"] == recommendation
     b_best = row["file_b"] == recommendation
@@ -449,15 +459,22 @@ def duplicate_card(row):
         <span class="badge {status_class(row['status'])}">{html.escape(row['status'])}</span>
       </div>
       <div class="duplicate-files">
-        {duplicate_file_block(row, 'a', row['file_a'], row['size_a'], row['quality_a'], a_best)}
-        {duplicate_file_block(row, 'b', row['file_b'], row['size_b'], row['quality_b'], b_best)}
+        {duplicate_file_block(row, 'a', row['file_a'], row['size_a'], row['quality_a'], a_best, can_manage)}
+        {duplicate_file_block(row, 'b', row['file_b'], row['size_b'], row['quality_b'], b_best, can_manage)}
       </div>
     </article>
     """
 
 
-def duplicate_file_block(row, side, path, size, quality, recommended):
+def duplicate_file_block(row, side, path, size, quality, recommended, can_manage=True):
     recommendation = "<span class='badge completed'>Recommended keep</span>" if recommended else ""
+    delete_form = f"""
+      <form method="post" action="/duplicates/delete">
+        <input type="hidden" name="id" value="{int(row['id'])}">
+        <input type="hidden" name="side" value="{side}">
+        <button type="submit" class="danger">Delete this file</button>
+      </form>
+    """ if can_manage else ""
     info = media_info(Path(path))
     return f"""
     <div class="duplicate-file">
@@ -473,11 +490,7 @@ def duplicate_file_block(row, side, path, size, quality, recommended):
         <dt>Runtime</dt><dd>{html.escape(format_duration(info.get('runtime') or 0))}</dd>
         <dt>Path</dt><dd title="{html.escape(path)}">{html.escape(short_path(path))}</dd>
       </dl>
-      <form method="post" action="/duplicates/delete">
-        <input type="hidden" name="id" value="{int(row['id'])}">
-        <input type="hidden" name="side" value="{side}">
-        <button type="submit" class="danger">Delete this file</button>
-      </form>
+      {delete_form}
     </div>
     """
 
@@ -521,10 +534,16 @@ def label_for(key):
     return {
         "admin_user": "Admin username",
         "admin_password": "Admin password",
+        "viewer_enabled": "Enable view-only local user",
+        "viewer_user": "View-only username",
+        "viewer_password": "View-only password",
         "sso_enabled": "Enable SSO",
         "sso_provider_name": "SSO provider name",
         "sso_client_id": "SSO client ID",
         "sso_client_secret": "SSO client secret",
+        "sso_client_auth_method": "SSO client auth method",
+        "sso_client_id_in_body": "Send SSO client ID in token body",
+        "sso_pkce_enabled": "Enable SSO PKCE for public clients",
         "sso_authorize_url": "SSO authorize URL",
         "sso_token_url": "SSO token URL",
         "sso_userinfo_url": "SSO userinfo URL",
@@ -532,6 +551,9 @@ def label_for(key):
         "sso_scope": "SSO scopes",
         "sso_allowed_users": "Allowed SSO users",
         "sso_allowed_domains": "Allowed SSO email domains",
+        "sso_default_role": "Default SSO role",
+        "sso_admin_users": "SSO admin users",
+        "sso_viewer_users": "SSO view-only users",
         "watch_folder": "Download watch folder",
         "movie_folder": "Movie library folder",
         "tv_folder": "TV library folder",
@@ -581,11 +603,12 @@ def label_for(key):
 
 
 SETTINGS_SECTIONS = [
-    ("Admin Account", ["admin_user", "admin_password"]),
     ("Single Sign-On", [
-        "sso_enabled", "sso_provider_name", "sso_client_id", "sso_client_secret",
-        "sso_authorize_url", "sso_token_url", "sso_userinfo_url", "sso_redirect_uri",
-        "sso_scope", "sso_allowed_users", "sso_allowed_domains",
+        "sso_enabled", "sso_provider_name", "sso_client_id", "sso_client_secret", "sso_client_auth_method", "sso_client_id_in_body", "sso_pkce_enabled",
+        "sso_authorize_url", "sso_token_url", "sso_userinfo_url", "sso_redirect_uri", "sso_scope",
+    ]),
+    ("SSO Access Rules", [
+        "sso_allowed_users", "sso_allowed_domains", "sso_default_role", "sso_admin_users", "sso_viewer_users",
     ]),
     ("Media Paths", ["watch_folder", "movie_folder", "tv_folder", "review_folder", "quarantine_folder"]),
     ("Processing", [
@@ -606,16 +629,27 @@ SETTINGS_SECTIONS = [
 ]
 
 
+HIDDEN_SETTINGS = {
+    "admin_user",
+    "admin_password",
+    "viewer_enabled",
+    "viewer_user",
+    "viewer_password",
+}
+
+
 SELECT_OPTIONS = {
     "metadata_provider": ["tmdb"],
     "transfer_mode": ["move", "copy"],
+    "sso_client_auth_method": ["client_secret_basic", "client_secret_post", "none"],
+    "sso_default_role": ["admin", "viewer"],
     "duplicate_schedule": ["disabled", "daily", "weekly", "monthly"],
     "malware_schedule": ["disabled", "daily", "weekly", "monthly"],
 }
 
 
 YES_NO_SETTINGS = {
-    "sso_enabled",
+    "viewer_enabled", "sso_enabled", "sso_client_id_in_body", "sso_pkce_enabled",
     "metadata_enabled", "metadata_required", "tvmaze_fallback_enabled", "pushover_enabled", "notify_success",
     "notify_failure", "notify_duplicate", "notify_scan_complete",
     "notify_mount_unavailable", "notify_metadata_down", "notify_malware",
@@ -643,21 +677,33 @@ SETTING_HELP = {
     "malware_schedule_day": "0 Monday through 6 Sunday.",
     "duplicate_schedule_day_of_month": "1 through 31.",
     "malware_schedule_day_of_month": "1 through 31.",
-    "tmdb_api_key": "Use the TMDB API Key v3 auth value.",
+    "tmdb_api_key": "Use the TMDB API Key v3 auth value. Leave blank to keep the saved key.",
+    "admin_password": "Leave blank to keep the current password. New values are saved as a password hash.",
     "tvmaze_fallback_enabled": "Used only as a fallback for TV episode names.",
     "tvmaze_backoff_seconds": "How long to pause TVmaze after rate limit errors.",
     "transfer_chunk_size": "Bytes read per transfer chunk. Larger is not always faster.",
-    "sso_authorize_url": "Use the authorization endpoint from your provider OpenID configuration.",
-    "sso_token_url": "Use the token endpoint from your provider OpenID configuration.",
-    "sso_userinfo_url": "Use the userinfo endpoint from your provider OpenID configuration.",
-    "sso_redirect_uri": "Use the exact callback URI registered with your provider, usually http://SERVER:8085/sso/callback or your reverse-proxy URL.",
+    "sso_authorize_url": "From your provider OpenID metadata, for example https://auth.example.com/application/o/authorize/.",
+    "sso_token_url": "From your provider OpenID metadata, for example https://auth.example.com/application/o/token/.",
+    "sso_userinfo_url": "From your provider OpenID metadata, for example https://auth.example.com/application/o/userinfo/.",
+    "sso_redirect_uri": "Use the exact callback URI registered with your provider, such as http://SERVER-IP:8085/sso/callback. If you enter only the base URL, Data Manager appends /sso/callback.",
+    "sso_client_auth_method": "Use client_secret_basic for Authentik unless your provider says otherwise.",
+    "sso_client_secret": "Leave blank to keep the saved client secret.",
+    "sso_client_id_in_body": "Enable this for Authentik if Basic auth without a body client_id returns invalid_client.",
+    "sso_pkce_enabled": "Used only when SSO client auth method is none/public. Confidential clients use the client secret instead.",
     "sso_allowed_users": "Optional comma list. If blank, any valid provider user is allowed unless domains are set.",
     "sso_allowed_domains": "Optional comma list like example.com. Leave blank to allow any provider domain.",
+    "viewer_enabled": "Allows a local read-only login that can view dashboards, logs, alerts, and scan pages but cannot change settings or run actions.",
+    "viewer_password": "Leave blank to keep the current password. New values are saved as a password hash.",
+    "pushover_app_token": "Leave blank to keep the saved app token.",
+    "pushover_user_key": "Leave blank to keep the saved user/group key.",
+    "sso_default_role": "Role assigned to valid SSO users who are not listed below. Use viewer for least privilege once your admin list is set.",
+    "sso_admin_users": "Comma list of SSO identities that receive admin access. Match the email, preferred username, username, or subject returned by SSO.",
+    "sso_viewer_users": "Comma list of SSO identities that receive view-only access.",
 }
 
 
 def settings_form(settings):
-    rendered_keys = set()
+    rendered_keys = set(HIDDEN_SETTINGS)
     sections = []
     for title, keys in SETTINGS_SECTIONS:
         if title == "Automatic Runs":
@@ -703,6 +749,76 @@ def settings_form(settings):
     return "\n".join(sections)
 
 
+def user_accounts_panel(users):
+    cards = "".join(user_account_card(dict(row)) for row in users) or "<p class='empty'>No local accounts exist yet. Add an admin account before disabling fallback credentials.</p>"
+    return f"""
+    <section class="panel" id="user-management">
+      <div class="panel-title">
+        <h2>User Management</h2>
+        <span class="badge completed">Role based</span>
+      </div>
+      <p>Local accounts are stored in the app database. Admin accounts can change settings and run actions. View-only accounts can inspect dashboards, logs, alerts, and scan pages.</p>
+      <div class="account-grid">{cards}</div>
+      <section class="settings-section account-create">
+        <h3>Add Local Account</h3>
+        <form method="post" action="/users/save" class="account-form">
+          <label>Username <input name="username" autocomplete="off" required></label>
+          <label>Role {role_select("viewer")}</label>
+          <label>Status {enabled_select(True)}</label>
+          <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
+          <button type="submit">Create account</button>
+        </form>
+      </section>
+    </section>
+    """
+
+
+def user_account_card(user):
+    username = html.escape(user["username"])
+    role = str(user.get("role") or "viewer")
+    enabled = bool(user.get("enabled"))
+    status_badge = "completed" if enabled else "queued"
+    status_text = "Enabled" if enabled else "Disabled"
+    delete_button = "" if role == "admin" else '<button type="submit" class="danger">Delete</button>'
+    return f"""
+    <article class="account-card">
+      <div class="account-head">
+        <div>
+          <strong>{username}</strong>
+          <small>{html.escape(role.title())}</small>
+        </div>
+        <span class="badge {status_badge}">{status_text}</span>
+      </div>
+      <form method="post" action="/users/save" class="account-form">
+        <input type="hidden" name="username" value="{username}">
+        <label>Role {role_select(role)}</label>
+        <label>Status {enabled_select(enabled)}</label>
+        <label>New password <input name="password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current"></label>
+        <button type="submit">Save account</button>
+      </form>
+      <form method="post" action="/users/delete" class="inline-form">
+        <input type="hidden" name="username" value="{username}">
+        {delete_button}
+      </form>
+    </article>
+    """
+
+
+def role_select(current):
+    return "".join(
+        f"<option value='{role}' {'selected' if current == role else ''}>{role.title()}</option>"
+        for role in ["admin", "viewer"]
+    ).join(["<select name='role'>", "</select>"])
+
+
+def enabled_select(current):
+    value = "yes" if current else "no"
+    return "".join(
+        f"<option value='{option}' {'selected' if value == option else ''}>{option.title()}</option>"
+        for option in ["yes", "no"]
+    ).join(["<select name='enabled'>", "</select>"])
+
+
 def schedule_card(settings, prefix, title, hour_key):
     schedule_key = f"{prefix}_schedule"
     day_key = f"{prefix}_schedule_day"
@@ -743,7 +859,8 @@ def settings_field(key, value):
     help_text = SETTING_HELP.get(key, "")
     help_html = f"<small>{html.escape(help_text)}</small>" if help_text else ""
     escaped_key = html.escape(key)
-    escaped_value = html.escape(value)
+    input_type = "password" if key in {"admin_password", "viewer_password", "tmdb_api_key", "pushover_app_token", "pushover_user_key", "sso_client_secret"} else "text"
+    escaped_value = "" if input_type == "password" else html.escape(value)
     if key in YES_NO_SETTINGS:
         options = "".join(
             f"<option value='{option}' {'selected' if str(value).lower() == option else ''}>{option.title()}</option>"
@@ -756,7 +873,6 @@ def settings_field(key, value):
             for option in SELECT_OPTIONS[key]
         )
         return f"<label>{label}<select name='{escaped_key}'>{options}</select>{help_html}</label>"
-    input_type = "password" if key in {"admin_password", "tmdb_api_key", "pushover_app_token", "pushover_user_key", "sso_client_secret"} else "text"
     if key in NUMBER_SETTINGS:
         input_type = "number"
     autocomplete = "off" if input_type == "password" else ""
@@ -828,7 +944,7 @@ def health_badge_class(status):
     return {"ok": "completed", "warn": "queued", "fail": "failed"}.get(status, "")
 
 
-def queue_panel(rows):
+def queue_panel(rows, can_manage=True):
     stages = [
         ("queued", "1", "Queued"),
         ("malware_check", "2", "Malware Check"),
@@ -861,14 +977,17 @@ def queue_panel(rows):
         for stage, number, label in stages
     )
     focus = pipeline_focus(current)
-    return f"""
-    <section class="panel">
-      <div class="panel-title">
-        <h2>Processing Pipeline</h2>
+    actions = """
         <div class="panel-actions">
           <a href="/scan-now">Scan now</a>
           <a href="/requeue-watch">Requeue watch files</a>
         </div>
+    """ if can_manage else "<span class='badge queued'>View-only</span>"
+    return f"""
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Processing Pipeline</h2>
+        {actions}
       </div>
       {focus}
       <ol class="timeline">{timeline}</ol>

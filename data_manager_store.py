@@ -83,6 +83,14 @@ def init_db():
                 infected integer not null default 0,
                 quarantined integer not null default 0
             );
+            create table if not exists local_users (
+                username text primary key,
+                password_hash text not null,
+                role text not null default 'viewer',
+                enabled integer not null default 1,
+                created_at text not null,
+                updated_at text not null
+            );
             """
         )
         ensure_duplicate_schema(conn)
@@ -93,8 +101,12 @@ def init_db():
                 (key, value),
             )
         conn.execute(
+            "insert or ignore into settings (key, value) values ('sso_client_id_in_body', 'yes')"
+        )
+        conn.execute(
             "update settings set value = 'move' where key = 'transfer_mode' and value = 'copy'"
         )
+        ensure_default_local_users(conn)
         conn.commit()
 
 
@@ -143,6 +155,25 @@ def migrate_seen_files(conn):
             conn.execute(statement)
 
 
+def ensure_default_local_users(conn):
+    existing = conn.execute("select count(*) as total from local_users").fetchone()["total"]
+    if existing:
+        return
+    settings = {
+        row["key"]: row["value"]
+        for row in conn.execute("select key, value from settings").fetchall()
+    }
+    admin_user = settings.get("admin_user") or DEFAULT_SETTINGS["admin_user"]
+    admin_password = settings.get("admin_password") or DEFAULT_SETTINGS["admin_password"]
+    if admin_user and admin_password:
+        upsert_local_user_conn(conn, admin_user, admin_password, "admin", True)
+    viewer_enabled = str(settings.get("viewer_enabled", "no")).lower() in {"yes", "true", "1", "on"}
+    viewer_user = settings.get("viewer_user") or DEFAULT_SETTINGS.get("viewer_user", "viewer")
+    viewer_password = settings.get("viewer_password") or ""
+    if viewer_enabled and viewer_user and viewer_password:
+        upsert_local_user_conn(conn, viewer_user, viewer_password, "viewer", True)
+
+
 def get_settings():
     with db_lock, db() as conn:
         rows = conn.execute("select key, value from settings").fetchall()
@@ -160,6 +191,65 @@ def save_settings(values):
                 (key, values.get(key, DEFAULT_SETTINGS[key]).strip()),
             )
         conn.commit()
+
+
+def get_local_users():
+    with db_lock, db() as conn:
+        return conn.execute(
+            "select username, role, enabled, created_at, updated_at from local_users order by role, username"
+        ).fetchall()
+
+
+def get_local_user(username):
+    with db_lock, db() as conn:
+        row = conn.execute(
+            "select username, password_hash, role, enabled, created_at, updated_at from local_users where lower(username) = lower(?)",
+            (username,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_local_user(username, password_hash, role, enabled=True):
+    with db_lock, db() as conn:
+        upsert_local_user_conn(conn, username, password_hash, role, enabled)
+        conn.commit()
+
+
+def upsert_local_user_conn(conn, username, password_hash, role, enabled=True):
+    timestamp = now_iso()
+    conn.execute(
+        """
+        insert into local_users (username, password_hash, role, enabled, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?)
+        on conflict(username) do update set
+            password_hash = case when excluded.password_hash = '' then local_users.password_hash else excluded.password_hash end,
+            role = excluded.role,
+            enabled = excluded.enabled,
+            updated_at = excluded.updated_at
+        """,
+        (username.strip(), password_hash, role, 1 if enabled else 0, timestamp, timestamp),
+    )
+
+
+def delete_local_user(username):
+    with db_lock, db() as conn:
+        conn.execute("delete from local_users where lower(username) = lower(?)", (username,))
+        conn.commit()
+
+
+def active_admin_count(exclude_username=""):
+    with db_lock, db() as conn:
+        row = conn.execute(
+            """
+            select count(*) as total
+            from local_users
+            where role = 'admin'
+              and enabled = 1
+              and lower(username) != lower(?)
+            """,
+            (exclude_username,),
+        ).fetchone()
+    return row["total"]
 
 
 def save_job_stat(job_name, job):

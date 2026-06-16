@@ -19,7 +19,7 @@ from data_manager_jobs import get_job, start_background_job, update_job
 from data_manager_media import *
 from data_manager_store import *
 from data_manager_utils import *
-from data_manager_server import Handler, configure_server
+from data_manager_server import Handler, configure_server, sso_health_check
 from data_manager_views import configure_views
 
 scan_event = threading.Event()
@@ -225,6 +225,8 @@ def requeue_watch_files():
 def dashboard_health():
     settings = get_settings()
     checks = [
+        access_control_health_check(settings),
+        sso_health_check(settings),
         tmdb_health_check(settings),
         tmdb_tv_health_check(settings),
         ffprobe_health_check(),
@@ -238,6 +240,24 @@ def dashboard_health():
         path_health_check("Database", DB_PATH.parent, needs_write=True),
     ]
     return checks
+
+
+def access_control_health_check(settings):
+    issues = []
+    if SESSION_SECRET == "change-me-in-production" or len(str(SESSION_SECRET)) < 32:
+        issues.append("set a long DATA_MANAGER_SESSION_SECRET")
+    local_users = get_local_users()
+    active_admins = [user for user in local_users if user["role"] == "admin" and int(user["enabled"])]
+    if not active_admins:
+        issues.append("create at least one enabled admin account")
+    active_admin_details = [get_local_user(user["username"]) for user in active_admins]
+    if any((user or {}).get("password_hash") in {"", "changeme"} for user in active_admin_details):
+        issues.append("change the default admin password")
+    if setting_enabled(settings, "viewer_enabled") and not settings.get("viewer_password", "").strip():
+        issues.append("set a view-only password or disable the viewer user")
+    if issues:
+        return {"name": "Access Control", "status": "fail", "detail": "; ".join(issues)}
+    return {"name": "Access Control", "status": "ok", "detail": "Role checks and CSRF protection are active"}
 
 
 def tmdb_api_key(settings=None):

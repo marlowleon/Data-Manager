@@ -1,0 +1,11 @@
+[project]
+name = "data-manager"
+version = "1.7.0"
+description = "Dockerized media import, rename, scan, duplicate check, and library management app."
+readme = "README.md"
+requires-python = ">=3.12"
+
+[tool.data-manager]
+docker_port = 8085
+container_port = 8080
+settings_database = "/data/data-manager.db"

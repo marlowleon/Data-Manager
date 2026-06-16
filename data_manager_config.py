@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from data_manager_version import APP_VERSION
+
 
 APP_NAME = "Data Manager"
 DB_PATH = Path(os.environ.get("DATA_MANAGER_DB", "/data/data-manager.db"))
@@ -47,10 +49,16 @@ IGNORED_WORDS = {
 DEFAULT_SETTINGS = {
     "admin_user": ADMIN_USER,
     "admin_password": ADMIN_PASSWORD,
+    "viewer_enabled": "no",
+    "viewer_user": "viewer",
+    "viewer_password": "",
     "sso_enabled": "no",
     "sso_provider_name": "Authentik",
     "sso_client_id": "",
     "sso_client_secret": "",
+    "sso_client_auth_method": "client_secret_basic",
+    "sso_client_id_in_body": "yes",
+    "sso_pkce_enabled": "no",
     "sso_authorize_url": "",
     "sso_token_url": "",
     "sso_userinfo_url": "",
@@ -58,6 +66,9 @@ DEFAULT_SETTINGS = {
     "sso_scope": "openid email profile",
     "sso_allowed_users": "",
     "sso_allowed_domains": "",
+    "sso_default_role": "admin",
+    "sso_admin_users": "",
+    "sso_viewer_users": "",
     "watch_folder": "/watch",
     "movie_folder": "/movies",
     "tv_folder": "/tv",
