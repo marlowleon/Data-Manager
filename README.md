@@ -1,3 +1,6 @@
+<img width="2853" height="1566" alt="image" src="https://github.com/user-attachments/assets/169fe35d-a01f-47aa-85db-6c6fb62ed78c" />
+<img width="2866" height="1571" alt="image" src="https://github.com/user-attachments/assets/bf7e3ca0-38c5-4cdb-9e67-a2f9f46ca8e5" />
+
 # Data Manager
 
 Data Manager is a Dockerized web app that watches a completed-downloads folder, identifies movie and TV files, verifies metadata, scans for malware, renames files, moves sidecar subtitle/artwork files, and organizes media into library folders.
