@@ -28,6 +28,8 @@ pushover_lock = threading.Lock()
 pushover_validation_cache = {"checked_at": 0, "settings_key": "", "result": None}
 malware_lock = threading.Lock()
 malware_definition_cache = {"checked_at": 0, "ok": False, "detail": "Not checked yet"}
+clamav_slot_condition = threading.Condition()
+clamav_active_scans = 0
 tmdb_lock = threading.Lock()
 tmdb_validation_cache = {"checked_at": 0, "settings_key": "", "movie": None, "tv": None}
 tvmaze_lock = threading.Lock()
@@ -1485,6 +1487,43 @@ def clamav_database_available():
     return any(path.is_file() for pattern in patterns for path in db_dir.glob(pattern))
 
 
+def malware_scan_limit(settings):
+    return int_setting(settings, "malware_scan_workers", MALWARE_SCAN_WORKERS, minimum=1, maximum=8)
+
+
+def malware_scan_timeout(settings):
+    return int_setting(settings, "malware_scan_timeout", MALWARE_SCAN_TIMEOUT, minimum=30, maximum=86400)
+
+
+def acquire_clamav_slot(settings):
+    global clamav_active_scans
+    limit = malware_scan_limit(settings)
+    with clamav_slot_condition:
+        while clamav_active_scans >= limit:
+            clamav_slot_condition.wait(timeout=5)
+        clamav_active_scans += 1
+    return limit
+
+
+def release_clamav_slot():
+    global clamav_active_scans
+    with clamav_slot_condition:
+        clamav_active_scans = max(0, clamav_active_scans - 1)
+        clamav_slot_condition.notify_all()
+
+
+def clamscan_failure_detail(returncode, output, timeout, limit):
+    if returncode == -9:
+        return (
+            "clamscan was killed with SIGKILL (-9). This usually means Docker or Unraid killed "
+            "the scan for memory pressure. Set Malware scan workers to 1, reduce new-file "
+            "workers during big imports, or increase the container memory limit."
+        )
+    if returncode < 0:
+        return f"clamscan was killed by signal {-returncode}. Output: {output[:300] or 'none'}"
+    return output or f"clamscan exited with {returncode} after timeout={timeout}s limit={limit}"
+
+
 def run_malware_scan(target, settings):
     if not shutil.which("clamscan"):
         raise ValueError("ClamAV clamscan is not installed")
@@ -1500,11 +1539,21 @@ def run_malware_scan(target, settings):
         "--stdout",
         str(target),
     ]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=MALWARE_SCAN_TIMEOUT, check=False)
+    timeout = malware_scan_timeout(settings)
+    limit = acquire_clamav_slot(settings)
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(
+            f"clamscan timed out after {timeout} seconds. Increase Malware scan timeout seconds "
+            "or scan fewer/lower-size files at once."
+        ) from exc
+    finally:
+        release_clamav_slot()
     output = "\n".join(part for part in [result.stdout.strip(), result.stderr.strip()] if part)
     infected = result.returncode == 1
     if result.returncode not in {0, 1}:
-        detail = output or f"clamscan exited with {result.returncode}"
+        detail = clamscan_failure_detail(result.returncode, output, timeout, limit)
         raise ValueError(detail[:500])
     return {
         "clean": not infected,
@@ -2025,14 +2074,14 @@ def malware_scan_all_job():
 
 def run_malware_library_scan(kind, files, settings):
     total = len(files)
-    workers = int_setting(settings, "malware_scan_workers", MALWARE_SCAN_WORKERS, minimum=1, maximum=8)
+    workers = malware_scan_limit(settings)
     update_job(
         "malware_scanner",
         total=total,
         workers=workers,
         stage="Inventory",
-        message=f"Found {total} files to scan. ClamAV will use {workers} worker(s).",
-        activity=f"Inventory complete: {total} files, {workers} ClamAV worker(s)",
+        message=f"Found {total} files to scan. ClamAV will use up to {workers} worker(s).",
+        activity=f"Inventory complete: {total} files, up to {workers} ClamAV worker(s)",
     )
     if not malware_enabled(settings):
         message = "Malware scanning is disabled in Settings"

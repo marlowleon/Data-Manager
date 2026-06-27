@@ -28,7 +28,7 @@ MEDIA_SCAN_WORKERS = int(os.environ.get("DATA_MANAGER_MEDIA_SCAN_WORKERS", "2"))
 FILE_MANAGEMENT_WORKERS = int(os.environ.get("DATA_MANAGER_FILE_MANAGEMENT_WORKERS", "6"))
 MALWARE_SCAN_HOUR = int(os.environ.get("DATA_MANAGER_MALWARE_SCAN_HOUR", "12"))
 MALWARE_SCAN_TIMEOUT = int(os.environ.get("DATA_MANAGER_MALWARE_SCAN_TIMEOUT", "900"))
-MALWARE_SCAN_WORKERS = int(os.environ.get("DATA_MANAGER_MALWARE_SCAN_WORKERS", "2"))
+MALWARE_SCAN_WORKERS = int(os.environ.get("DATA_MANAGER_MALWARE_SCAN_WORKERS", "1"))
 
 VIDEO_EXTENSIONS = {
     ".3g2", ".3gp", ".avi", ".flv", ".m2ts", ".m4v", ".mkv", ".mov",
@@ -92,6 +92,7 @@ DEFAULT_SETTINGS = {
     "duplicate_schedule_day": "0",
     "duplicate_schedule_day_of_month": "1",
     "malware_scan_workers": str(MALWARE_SCAN_WORKERS),
+    "malware_scan_timeout": str(MALWARE_SCAN_TIMEOUT),
     "ffprobe_timeout": str(FFPROBE_TIMEOUT),
     "transfer_chunk_size": str(TRANSFER_CHUNK_SIZE),
     "max_queue_display": str(MAX_QUEUE_DISPLAY),

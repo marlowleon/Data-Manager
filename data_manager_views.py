@@ -595,6 +595,7 @@ def label_for(key):
         "notify_malware": "Notify malware quarantines",
         "malware_enabled": "Enable malware scanning",
         "malware_update_definitions": "Auto-update malware definitions",
+        "malware_scan_timeout": "Malware scan timeout seconds",
         "malware_schedule": "Schedule",
         "malware_daily_hour": "Daily malware scan hour",
         "malware_schedule_day": "Malware weekly day",
@@ -624,7 +625,7 @@ SETTINGS_SECTIONS = [
         "notify_success", "notify_failure", "notify_duplicate", "notify_scan_complete",
         "notify_mount_unavailable", "notify_metadata_down", "notify_malware",
     ]),
-    ("Malware Scanner", ["malware_enabled", "malware_update_definitions", "malware_scan_workers"]),
+    ("Malware Scanner", ["malware_enabled", "malware_update_definitions", "malware_scan_workers", "malware_scan_timeout"]),
     ("Advanced Transfer", ["transfer_chunk_size"]),
 ]
 
@@ -660,7 +661,7 @@ YES_NO_SETTINGS = {
 NUMBER_SETTINGS = {
     "poll_interval", "stable_seconds", "max_ready_per_scan", "file_management_workers",
     "duplicate_scan_workers", "duplicate_scan_hour", "duplicate_schedule_day", "duplicate_schedule_day_of_month",
-    "malware_scan_workers", "tvmaze_backoff_seconds", "malware_daily_hour", "malware_schedule_day",
+    "malware_scan_workers", "malware_scan_timeout", "tvmaze_backoff_seconds", "malware_daily_hour", "malware_schedule_day",
     "malware_schedule_day_of_month", "ffprobe_timeout", "transfer_chunk_size",
     "max_queue_display", "max_new_file_events_per_scan", "max_requeue_per_click",
 }
@@ -670,7 +671,8 @@ SETTING_HELP = {
     "max_ready_per_scan": "How many new downloads can process at the same time.",
     "file_management_workers": "Parallel workers for manual library cleanup scans.",
     "duplicate_scan_workers": "Parallel workers for duplicate indexing.",
-    "malware_scan_workers": "Parallel ClamAV scans. Keep low if disks slow down.",
+    "malware_scan_workers": "Maximum ClamAV processes allowed at the same time. Use 1 if scans are being killed or memory climbs.",
+    "malware_scan_timeout": "Maximum seconds one ClamAV scan may run before Data Manager marks it failed.",
     "duplicate_schedule": "Controls automatic duplicate checker runs.",
     "malware_schedule": "Controls automatic malware library scans.",
     "duplicate_schedule_day": "0 Monday through 6 Sunday.",
